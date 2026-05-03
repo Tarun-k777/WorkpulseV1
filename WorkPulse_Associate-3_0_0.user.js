@@ -110,7 +110,7 @@
     }
 
     /* ── Root shell ── */
-    #dtr-root-outer{position:fixed;inset:0;z-index:2147483647;overflow:hidden;background:var(--bg)}#dtr-root{position:absolute;top:0;left:0;width:90.9%;height:90.9%;transform:scale(1.1);transform-origin:top left;font-family:var(--font);font-size:1rem;background:var(--bg);color:var(--text);display:flex;flex-direction:column;overflow:hidden}
+    #dtr-root-outer{position:fixed;inset:0;z-index:2147483647;overflow:hidden}#dtr-root{position:absolute;top:0;left:0;right:0;bottom:0;zoom:1.1;font-family:var(--font);font-size:1rem;background:var(--bg);color:var(--text);display:flex;flex-direction:column;overflow:hidden}
 
     /* ── Top bar ── */
     #dtr-topbar{height:56px;flex-shrink:0;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:8px}
@@ -1074,8 +1074,11 @@
       }).join('') + '</div>' +
 
       // Single-day edit panel (only in normal mode)
-      (!attBulkMode ? '<div id="att-edit-panel">' + buildAttEditPanel(attDate) + '</div>' :
-        (attMultiSelect.size === 0 ? '<div class="info-banner">👆 Tap multiple days above to select them, then choose a status to apply to all at once.</div>' : ''));
+      (!attBulkMode
+        ? '<div id="att-edit-panel" style="margin-top:8px">' + buildAttEditPanel(attDate) + '</div>'
+        : (attMultiSelect.size===0
+            ? '<div class="info-banner" style="margin-top:8px">☑️ Tap days above to select them, then pick a status to apply to all.</div>'
+            : ''));
   }
 
   function attToggleBulk() {
@@ -1142,96 +1145,128 @@
     }, 100);
 
     // week-picker-apply handled in handleClick
-    // Build calendar grid cells
+  }
+
+  // ── MY CALENDAR ────────────────────────────────────────────────────────
+  let calMonthOffset = 0;
+
+  function renderMyCalendar() {
+    const el = q('#view-calendar'); if (!el) return;
+    const now = new Date();
+    const targetDate = new Date(now.getFullYear(), now.getMonth() + calMonthOffset, 1);
+    const year  = targetDate.getFullYear();
+    const month = targetDate.getMonth();
+    const monthName = targetDate.toLocaleDateString('en-US', {month:'long', year:'numeric'});
+    const today = todayStr();
+
+    const firstDay  = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+
+    const monthKey = year + '-' + String(month+1).padStart(2,'0');
+    const monthEntries = Object.entries(statusCache).filter(([dk]) => dk.startsWith(monthKey));
+    const wfoCnt = monthEntries.filter(([,v]) => v.status==='WFO').length;
+    const wfhCnt = monthEntries.filter(([,v]) => v.status==='WFH').length;
+    const slCnt  = monthEntries.filter(([,v]) => v.status==='SL').length;
+    const clCnt  = monthEntries.filter(([,v]) => v.status==='CL').length;
+    const alCnt  = monthEntries.filter(([,v]) => v.status==='AL').length;
+    const ooCnt  = monthEntries.filter(([,v]) => v.status==='Optional Off').length;
+    const markedDays = monthEntries.length;
+
+    let workingDays = 0;
+    for (let d = 1; d <= totalDays; d++) {
+      const dow = new Date(year, month, d).getDay();
+      if (dow !== 0 && dow !== 6) workingDays++;
+    }
+
+    const STATUS_COLOR = {
+      WFO:'#3fb950', WFH:'#22d3ee', SL:'#f85149',
+      CL:'#d29922', AL:'#a371f7', 'Optional Off':'#6b7280'
+    };
+    const STATUS_SHORT = {
+      WFO:'WFO', WFH:'WFH', SL:'SL', CL:'CL', AL:'AL', 'Optional Off':'Off'
+    };
+
     const dayHeaders = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     let cells = '';
-    // Empty cells before first day
-    for (let i = 0; i < firstDay; i++) {
-      cells += '<div class="cal-cell cal-empty"></div>';
-    }
+    for (let i = 0; i < firstDay; i++) cells += '<div class="cal-cell cal-empty"></div>';
     for (let d = 1; d <= totalDays; d++) {
       const dk  = year + '-' + String(month+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
       const dow = new Date(year, month, d).getDay();
-      const isWeekend = dow === 0 || dow === 6;
-      const isToday   = dk === today;
-      const isFuture  = dk > today;
-      const entry = statusCache[dk] || null;
+      const isWeekend = dow===0||dow===6;
+      const isToday   = dk===today;
+      const isFuture  = dk>today;
+      const entry = statusCache[dk]||null;
       const st    = entry ? entry.status : '';
       const color = st ? STATUS_COLOR[st] : '';
       const short = st ? STATUS_SHORT[st] : '';
       cells += '<div class="cal-cell' +
-        (isWeekend ? ' cal-weekend' : '') +
-        (isToday   ? ' cal-today'   : '') +
-        (isFuture  ? ' cal-future'  : '') +
-        (st        ? ' cal-marked'  : '') +
-        '"' +
-        (st ? ' style="border-color:' + color + ';background:' + color + '18"' : '') +
-        ' data-action="cal-day" data-dk="' + dk + '">' +
-        '<div class="cal-day-num' + (isToday?' cal-today-num':'') + '">' + d + '</div>' +
+        (isWeekend?' cal-weekend':'') +
+        (isToday?' cal-today':'') +
+        (isFuture?' cal-future':'') +
+        (st?' cal-marked':'') + '"' +
+        (st?' style="border-color:'+color+';background:'+color+'18"':'') +
+        ' data-dk="'+dk+'">' +
+        '<div class="cal-day-num'+(isToday?' cal-today-num':'')+'">'+d+'</div>' +
         (st
-          ? '<div class="cal-day-badge" style="background:' + color + '">' + short + '</div>'
-          : (isWeekend ? '<div class="cal-day-wknd">—</div>' : '<div class="cal-day-empty"></div>')
-        ) +
+          ? '<div class="cal-day-badge" style="background:'+color+';color:#fff;padding:2px 6px;border-radius:4px;font-size:.68rem;font-weight:800;margin-top:4px">'+short+'</div>'
+          : (isWeekend?'<div class="cal-day-wknd" style="font-size:.68rem;color:var(--text3);margin-top:4px">—</div>':'')) +
         '</div>';
     }
 
     el.innerHTML =
       '<div class="ph"><div class="ph-left"><div class="ph-title">My Attendance Calendar</div>' +
-      '<div class="ph-sub">Your personal attendance history — click any day to mark or edit</div></div>' +
-      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="cal-sync">' + ic.sync + ' Sync</button></div></div>' +
+      '<div class="ph-sub">'+markedDays+' of '+workingDays+' working days marked · Click any day to mark or edit</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="cal-sync">'+ic.sync+' Sync</button></div></div>' +
 
-      // Month navigator
       '<div class="wv-controls" style="margin-bottom:16px">' +
-      '<button class="wv-nav-btn" data-action="cal-prev">' + ic.left + '</button>' +
-      '<div class="wv-range"><div class="wv-range-title">' + monthName + '</div>' +
-      '<div class="wv-range-sub">' + markedDays + ' of ' + workingDays + ' working days marked</div></div>' +
-      (calMonthOffset !== 0 ? '<button class="wv-today-btn" data-action="cal-today">This Month</button>' : '') +
-      '<button class="wv-nav-btn" data-action="cal-next">' + ic.right + '</button>' +
+      '<button class="wv-nav-btn" data-action="cal-prev">'+ic.left+'</button>' +
+      '<div class="wv-range"><div class="wv-range-title">'+monthName+'</div>' +
+      '<div class="wv-range-sub">'+(calMonthOffset===0?'Current Month':calMonthOffset<0?Math.abs(calMonthOffset)+' month(s) ago':calMonthOffset+' month(s) ahead')+'</div></div>' +
+      (calMonthOffset!==0?'<button class="wv-today-btn" data-action="cal-today">This Month</button>':'') +
+      '<button class="wv-nav-btn" data-action="cal-next">'+ic.right+'</button></div>' +
+
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<div class="stat-card gb" style="flex:1;min-width:100px"><div class="lbl">WFO</div><div class="val" style="color:#3fb950">'+wfoCnt+'</div></div>' +
+      '<div class="stat-card ab" style="flex:1;min-width:100px"><div class="lbl">WFH</div><div class="val" style="color:#22d3ee">'+wfhCnt+'</div></div>' +
+      '<div class="stat-card amb" style="flex:1;min-width:100px"><div class="lbl">Leaves</div><div class="val" style="color:var(--amber)">'+(slCnt+clCnt+alCnt)+'</div><div class="sub">SL '+slCnt+' CL '+clCnt+' AL '+alCnt+'</div></div>' +
+      '<div class="stat-card pb" style="flex:1;min-width:100px"><div class="lbl">Opt Off</div><div class="val" style="color:var(--text3)">'+ooCnt+'</div></div>' +
       '</div>' +
 
-      // Stats row
-      '<div class="stats-grid sg4" style="margin-bottom:16px">' +
-      '<div class="stat-card gb"><div class="lbl">WFO Days</div><div class="val" style="color:#3fb950">' + wfoCnt + '</div></div>' +
-      '<div class="stat-card ab"><div class="lbl">WFH Days</div><div class="val" style="color:#22d3ee">' + wfhCnt + '</div></div>' +
-      '<div class="stat-card amb"><div class="lbl">Leaves</div><div class="val" style="color:var(--amber)">' + (slCnt+clCnt+alCnt) + '</div><div class="sub">SL ' + slCnt + ' · CL ' + clCnt + ' · AL ' + alCnt + '</div></div>' +
-      '<div class="stat-card pb"><div class="lbl">Optional Off</div><div class="val" style="color:var(--text3)">' + ooCnt + '</div></div>' +
-      '</div>' +
-
-      // Calendar legend
-      '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;align-items:center">' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;align-items:center">' +
       Object.entries(STATUS_COLOR).map(([s,c]) =>
-        '<div style="display:flex;align-items:center;gap:5px"><div style="width:10px;height:10px;border-radius:3px;background:' + c + '"></div>' +
-        '<span style="font-size:.78rem;color:var(--text2);font-weight:600">' + s + '</span></div>'
+        '<div style="display:flex;align-items:center;gap:4px">' +
+        '<div style="width:10px;height:10px;border-radius:3px;background:'+c+'"></div>' +
+        '<span style="font-size:.76rem;color:var(--text2);font-weight:600">'+s+'</span></div>'
       ).join('') + '</div>' +
 
-      // Calendar grid
       '<div class="cal-grid-wrap">' +
-      '<div class="cal-header">' + dayHeaders.map(d => '<div class="cal-hcell">' + d + '</div>').join('') + '</div>' +
-      '<div class="cal-grid">' + cells + '</div>' +
+      '<div class="cal-header">'+dayHeaders.map(d=>'<div class="cal-hcell">'+d+'</div>').join('')+'</div>' +
+      '<div class="cal-grid" id="cal-grid">'+cells+'</div>' +
       '</div>' +
 
-      // Day edit panel (shown on click)
+      (markedDays===0&&calMonthOffset===0?'<div class="info-banner" style="margin-top:12px">📅 No records found. Click <strong>Sync</strong> to load your attendance from SharePoint, or go to <strong>Mark Attendance</strong> to start marking.</div>':'') +
       '<div id="cal-edit-panel" style="margin-top:14px"></div>';
 
     // Bind day clicks
-    const grid = el.querySelector('.cal-grid');
+    const grid = el.querySelector('#cal-grid');
     if (grid) {
       grid.addEventListener('click', e => {
-        const cell = e.target.closest('[data-action="cal-day"]');
-        if (!cell) return;
+        const cell = e.target.closest('.cal-cell');
+        if (!cell||!cell.dataset.dk||cell.classList.contains('cal-empty')) return;
         const dk = cell.dataset.dk;
-        if (!dk) return;
-        // Set attDate and switch to mark tab's edit panel inline
+        // Highlight
+        el.querySelectorAll('.cal-cell').forEach(c=>c.classList.toggle('cal-cell-active',c.dataset.dk===dk));
+        // Open edit panel
         attDate = dk;
         attSelectedStatus = (statusCache[dk]||{}).status||'';
         const panel = q('#cal-edit-panel');
-        if (panel) panel.innerHTML = buildAttEditPanel(dk);
-        // highlight selected cell
-        el.querySelectorAll('.cal-cell').forEach(c => c.classList.toggle('cal-cell-active', c.dataset.dk === dk));
+        if (panel) {
+          panel.innerHTML = buildAttEditPanel(dk);
+          panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+        }
       });
     }
   }
-
 
   // MISSED NPT
   const NPT_TYPES = ['System Issue','Meeting Overrun','Training','Lack of Work','Power Outage','Network Issue','Admin Task','Other'];

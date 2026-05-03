@@ -1115,6 +1115,198 @@
     renderMarkAttendance();
   }
 
+
+  function buildAttEditPanel(dk) {
+    const existing = statusCache[dk] || {};
+    const selStatus = attSelectedStatus;
+    const today = todayStr();
+    const isFuture = dk > today;
+    const dateLabel = dk===today?'Today':dk===yesterdayStr()?'Yesterday':formatDay(dk);
+    return '<div class="att-edit-card">' +
+      '<div class="att-edit-header">' +
+      '<div><div class="att-edit-date">' + dateLabel + '</div>' +
+      '<div class="att-edit-datesub">' + formatDay(dk) + '</div></div>' +
+      (existing.status ? '<span class="att-saved-pill" style="background:' + (STATUS_CFG[existing.status]||{}).bg + ';color:' + (STATUS_CFG[existing.status]||{}).color + '">✓ Saved: ' + existing.status + '</span>' : '') +
+      '</div>' +
+      (isFuture ? '<div class="info-banner" style="margin-bottom:12px">📅 Future date — you can pre-mark it.</div>' : '') +
+      '<div class="status-grid" id="att-status-grid">' +
+      STATUSES.map(s => {
+        const cfg = STATUS_CFG[s], sel = (selStatus === s);
+        return '<div class="status-tile' + (sel ? ' selected' : '') + '" data-action="att-status" data-val="' + s + '"' +
+          ' style="border-color:' + (sel ? cfg.color : 'var(--border)') + ';background:' + (sel ? cfg.bg : 'var(--bg2)') + '">' +
+          '<div class="sel-check" style="background:' + cfg.color + ';color:#fff">' + ic.check + '</div>' +
+          '<div class="status-tile-label">' + s + '</div>' +
+          '<div class="status-tile-sub">' + cfg.label + '</div></div>';
+      }).join('') + '</div>' +
+      '<button class="att-save-btn" id="att-save-btn" data-action="att-save"' + (!selStatus ? ' disabled' : '') + '>' +
+      ic.check + ' Save — ' + dateLabel + '</button>' +
+      '</div>';
+  }
+
+  function attSelectStatus(status) {
+    attSelectedStatus = status;
+    const cfg = STATUS_CFG[status] || {};
+    // Update tile highlights — pure DOM, no rebuild
+    qa('#att-status-grid .status-tile').forEach(tile => {
+      const s = tile.dataset.val;
+      const tcfg = STATUS_CFG[s] || {};
+      const isSel = (s === status);
+      tile.classList.toggle('selected', isSel);
+      tile.style.borderColor = isSel ? tcfg.color : 'var(--border)';
+      tile.style.background  = isSel ? tcfg.bg    : 'var(--bg2)';
+    });
+    // Enable save button
+    const saveBtn = q('#att-save-btn');
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.removeAttribute('disabled'); }
+    // Update day card dot color live
+    qa('.att-day-card').forEach(card => {
+      if (card.dataset.val === attDate) {
+        const dotEl = card.querySelector('.att-day-dot');
+        const stEl  = card.querySelector('.att-day-status');
+        if (dotEl) dotEl.style.background = cfg.color || 'var(--border2)';
+        if (stEl)  { stEl.textContent = status; stEl.style.color = cfg.color || 'var(--text3)'; }
+        if (cfg.color) { card.style.borderColor = cfg.color; card.style.background = cfg.bg; }
+      }
+    });
+  }
+
+  async function attSave() {
+    if (!attSelectedStatus) { toast('Select a status first', 'err'); return; }
+    const btn = q('[data-action="att-save"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+    const entry = { status: attSelectedStatus, process: '', task: '', date: attDate, name: authState.name, updatedAt: new Date().toISOString() };
+    statusCache[attDate] = entry;
+    safeSaveObj('dtr_status2', statusCache);
+    teamStatusCache[authState.name + '::' + attDate] = { status: entry.status, process: '', task: '' };
+    safeSaveObj('dtr_teamcache', teamStatusCache);
+    const sent = await postAttendance(entry);
+    if (!sent) toast('Saved locally (SP sync pending)', 'info');
+    else toast('✅ Attendance saved — ' + attSelectedStatus, 'ok');
+    if (btn) { btn.disabled = false; btn.innerHTML = ic.check + ' Save — ' + (attDate === todayStr() ? 'Today' : attDate === yesterdayStr() ? 'Yesterday' : formatDay(attDate)); }
+    // Update day card to show saved status
+    qa('.att-day-card').forEach(card => {
+      if (card.dataset.val === attDate) {
+        const cfg = STATUS_CFG[attSelectedStatus] || {};
+        const dotEl = card.querySelector('.att-day-dot');
+        const stEl  = card.querySelector('.att-day-status');
+        if (dotEl) dotEl.style.background = cfg.color || 'var(--border2)';
+        if (stEl)  { stEl.textContent = attSelectedStatus; stEl.style.color = cfg.color || 'var(--text3)'; }
+        card.style.borderColor = cfg.color || 'var(--border)';
+        card.style.background  = cfg.bg    || 'var(--bg2)';
+      }
+    });
+    // Re-render panel to show saved badge
+    const p = q('#att-edit-panel');
+    if (p) p.innerHTML = buildAttEditPanel(attDate);
+    if (currentView === 'calendar') renderMyCalendar();
+  }
+
+  function attNavDate(delta) {
+    const d = new Date(attDate + 'T12:00:00');
+    d.setDate(d.getDate() + delta);
+    attDate = d.toISOString().split('T')[0];
+    attSelectedStatus = (statusCache[attDate] || {}).status || '';
+    const todayD = new Date(todayStr() + 'T12:00:00');
+    const selD   = new Date(attDate + 'T12:00:00');
+    const todaySun = new Date(todayD); todaySun.setDate(todaySun.getDate() - todaySun.getDay());
+    const selSun   = new Date(selD);   selSun.setDate(selSun.getDate() - selSun.getDay());
+    attWeekOffset = Math.round((selSun - todaySun) / (7 * 24 * 60 * 60 * 1000));
+    renderMarkAttendance();
+  }
+
+  function attNavToday() {
+    attDate = todayStr();
+    attWeekOffset = 0;
+    attSelectedStatus = (statusCache[attDate] || {}).status || '';
+    renderMarkAttendance();
+  }
+
+  // ── MY CALENDAR ────────────────────────────────────────────────────────
+  let calMonthOffset = 0;
+
+  function renderMyCalendar() {
+    const el = q('#view-calendar'); if (!el) return;
+    const now = new Date();
+    const targetDate = new Date(now.getFullYear(), now.getMonth() + calMonthOffset, 1);
+    const year  = targetDate.getFullYear();
+    const month = targetDate.getMonth();
+    const monthName = targetDate.toLocaleDateString('en-US', {month:'long', year:'numeric'});
+    const today = todayStr();
+    const firstDay  = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const monthKey  = year + '-' + String(month+1).padStart(2,'0');
+    const monthEntries = Object.entries(statusCache).filter(([dk]) => dk.startsWith(monthKey));
+    const wfoCnt = monthEntries.filter(([,v]) => v.status==='WFO').length;
+    const wfhCnt = monthEntries.filter(([,v]) => v.status==='WFH').length;
+    const slCnt  = monthEntries.filter(([,v]) => v.status==='SL').length;
+    const clCnt  = monthEntries.filter(([,v]) => v.status==='CL').length;
+    const alCnt  = monthEntries.filter(([,v]) => v.status==='AL').length;
+    const ooCnt  = monthEntries.filter(([,v]) => v.status==='Optional Off').length;
+    const markedDays = monthEntries.length;
+    let workingDays = 0;
+    for (let d = 1; d <= totalDays; d++) {
+      const dow = new Date(year, month, d).getDay();
+      if (dow !== 0 && dow !== 6) workingDays++;
+    }
+    const STATUS_COLOR = {WFO:'#3fb950',WFH:'#22d3ee',SL:'#f85149',CL:'#d29922',AL:'#a371f7','Optional Off':'#6b7280'};
+    const STATUS_SHORT = {WFO:'WFO',WFH:'WFH',SL:'SL',CL:'CL',AL:'AL','Optional Off':'Off'};
+    const dayHeaders = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    let cells = '';
+    for (let i = 0; i < firstDay; i++) cells += '<div class="cal-cell cal-empty"></div>';
+    for (let d = 1; d <= totalDays; d++) {
+      const dk  = year + '-' + String(month+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+      const dow = new Date(year, month, d).getDay();
+      const isWeekend = dow===0||dow===6, isToday=dk===today, isFuture=dk>today;
+      const st = (statusCache[dk]||{}).status||'';
+      const color = st ? STATUS_COLOR[st] : '', short = st ? STATUS_SHORT[st] : '';
+      cells += '<div class="cal-cell' + (isWeekend?' cal-weekend':'') + (isToday?' cal-today':'') + (isFuture?' cal-future':'') + '"' +
+        (st?' style="border-color:'+color+';background:'+color+'18"':'') + ' data-dk="'+dk+'">' +
+        '<div class="cal-day-num'+(isToday?' cal-today-num':'')+'">'+d+'</div>' +
+        (st?'<div class="cal-day-badge" style="background:'+color+';color:#fff;padding:2px 6px;border-radius:4px;font-size:.68rem;font-weight:800;margin-top:4px">'+short+'</div>':
+           (isWeekend?'<div class="cal-day-wknd" style="font-size:.68rem;color:var(--text3);margin-top:4px">—</div>':'')) +
+        '</div>';
+    }
+    el.innerHTML =
+      '<div class="ph"><div class="ph-left"><div class="ph-title">My Attendance Calendar</div>' +
+      '<div class="ph-sub">'+markedDays+' of '+workingDays+' working days marked · Click any day to mark or edit</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="cal-sync">'+ic.sync+' Sync</button></div></div>' +
+      '<div class="wv-controls" style="margin-bottom:16px">' +
+      '<button class="wv-nav-btn" data-action="cal-prev">'+ic.left+'</button>' +
+      '<div class="wv-range"><div class="wv-range-title">'+monthName+'</div>' +
+      '<div class="wv-range-sub">'+(calMonthOffset===0?'Current Month':Math.abs(calMonthOffset)+' month(s) '+(calMonthOffset<0?'ago':'ahead'))+'</div></div>' +
+      (calMonthOffset!==0?'<button class="wv-today-btn" data-action="cal-today">This Month</button>':'') +
+      '<button class="wv-nav-btn" data-action="cal-next">'+ic.right+'</button></div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
+      '<div class="stat-card gb" style="flex:1;min-width:100px"><div class="lbl">WFO</div><div class="val" style="color:#3fb950">'+wfoCnt+'</div></div>' +
+      '<div class="stat-card ab" style="flex:1;min-width:100px"><div class="lbl">WFH</div><div class="val" style="color:#22d3ee">'+wfhCnt+'</div></div>' +
+      '<div class="stat-card amb" style="flex:1;min-width:100px"><div class="lbl">Leaves</div><div class="val" style="color:var(--amber)">'+(slCnt+clCnt+alCnt)+'</div><div class="sub">SL '+slCnt+' CL '+clCnt+' AL '+alCnt+'</div></div>' +
+      '<div class="stat-card pb" style="flex:1;min-width:100px"><div class="lbl">Opt Off</div><div class="val" style="color:var(--text3)">'+ooCnt+'</div></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">' +
+      Object.entries(STATUS_COLOR).map(([s,c])=>'<div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:3px;background:'+c+'"></div><span style="font-size:.76rem;color:var(--text2);font-weight:600">'+s+'</span></div>').join('') +
+      '</div>' +
+      '<div class="cal-grid-wrap">' +
+      '<div class="cal-header">'+dayHeaders.map(d=>'<div class="cal-hcell">'+d+'</div>').join('')+'</div>' +
+      '<div class="cal-grid" id="cal-grid">'+cells+'</div>' +
+      '</div>' +
+      (markedDays===0&&calMonthOffset===0?'<div class="info-banner" style="margin-top:12px">📅 No records yet. Click <strong>Sync</strong> to load from SharePoint, or go to <strong>Mark Attendance</strong> to start marking.</div>':'') +
+      '<div id="cal-edit-panel" style="margin-top:14px"></div>';
+
+    const grid = el.querySelector('#cal-grid');
+    if (grid) {
+      grid.addEventListener('click', e => {
+        const cell = e.target.closest('.cal-cell');
+        if (!cell||!cell.dataset.dk||cell.classList.contains('cal-empty')) return;
+        const dk = cell.dataset.dk;
+        el.querySelectorAll('.cal-cell').forEach(c => c.classList.toggle('cal-cell-active', c.dataset.dk===dk));
+        attDate = dk;
+        attSelectedStatus = (statusCache[dk]||{}).status||'';
+        const panel = q('#cal-edit-panel');
+        if (panel) { panel.innerHTML = buildAttEditPanel(dk); panel.scrollIntoView({behavior:'smooth',block:'nearest'}); }
+      });
+    }
+  }
+
   async function attApplyToWeek() {
     // Show a quick status picker overlay
     const existing = q('#att-week-picker');
@@ -1148,126 +1340,6 @@
   }
 
   // ── MY CALENDAR ────────────────────────────────────────────────────────
-  let calMonthOffset = 0;
-
-  function renderMyCalendar() {
-    const el = q('#view-calendar'); if (!el) return;
-    const now = new Date();
-    const targetDate = new Date(now.getFullYear(), now.getMonth() + calMonthOffset, 1);
-    const year  = targetDate.getFullYear();
-    const month = targetDate.getMonth();
-    const monthName = targetDate.toLocaleDateString('en-US', {month:'long', year:'numeric'});
-    const today = todayStr();
-
-    const firstDay  = new Date(year, month, 1).getDay();
-    const totalDays = new Date(year, month + 1, 0).getDate();
-
-    const monthKey = year + '-' + String(month+1).padStart(2,'0');
-    const monthEntries = Object.entries(statusCache).filter(([dk]) => dk.startsWith(monthKey));
-    const wfoCnt = monthEntries.filter(([,v]) => v.status==='WFO').length;
-    const wfhCnt = monthEntries.filter(([,v]) => v.status==='WFH').length;
-    const slCnt  = monthEntries.filter(([,v]) => v.status==='SL').length;
-    const clCnt  = monthEntries.filter(([,v]) => v.status==='CL').length;
-    const alCnt  = monthEntries.filter(([,v]) => v.status==='AL').length;
-    const ooCnt  = monthEntries.filter(([,v]) => v.status==='Optional Off').length;
-    const markedDays = monthEntries.length;
-
-    let workingDays = 0;
-    for (let d = 1; d <= totalDays; d++) {
-      const dow = new Date(year, month, d).getDay();
-      if (dow !== 0 && dow !== 6) workingDays++;
-    }
-
-    const STATUS_COLOR = {
-      WFO:'#3fb950', WFH:'#22d3ee', SL:'#f85149',
-      CL:'#d29922', AL:'#a371f7', 'Optional Off':'#6b7280'
-    };
-    const STATUS_SHORT = {
-      WFO:'WFO', WFH:'WFH', SL:'SL', CL:'CL', AL:'AL', 'Optional Off':'Off'
-    };
-
-    const dayHeaders = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    let cells = '';
-    for (let i = 0; i < firstDay; i++) cells += '<div class="cal-cell cal-empty"></div>';
-    for (let d = 1; d <= totalDays; d++) {
-      const dk  = year + '-' + String(month+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
-      const dow = new Date(year, month, d).getDay();
-      const isWeekend = dow===0||dow===6;
-      const isToday   = dk===today;
-      const isFuture  = dk>today;
-      const entry = statusCache[dk]||null;
-      const st    = entry ? entry.status : '';
-      const color = st ? STATUS_COLOR[st] : '';
-      const short = st ? STATUS_SHORT[st] : '';
-      cells += '<div class="cal-cell' +
-        (isWeekend?' cal-weekend':'') +
-        (isToday?' cal-today':'') +
-        (isFuture?' cal-future':'') +
-        (st?' cal-marked':'') + '"' +
-        (st?' style="border-color:'+color+';background:'+color+'18"':'') +
-        ' data-dk="'+dk+'">' +
-        '<div class="cal-day-num'+(isToday?' cal-today-num':'')+'">'+d+'</div>' +
-        (st
-          ? '<div class="cal-day-badge" style="background:'+color+';color:#fff;padding:2px 6px;border-radius:4px;font-size:.68rem;font-weight:800;margin-top:4px">'+short+'</div>'
-          : (isWeekend?'<div class="cal-day-wknd" style="font-size:.68rem;color:var(--text3);margin-top:4px">—</div>':'')) +
-        '</div>';
-    }
-
-    el.innerHTML =
-      '<div class="ph"><div class="ph-left"><div class="ph-title">My Attendance Calendar</div>' +
-      '<div class="ph-sub">'+markedDays+' of '+workingDays+' working days marked · Click any day to mark or edit</div></div>' +
-      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="cal-sync">'+ic.sync+' Sync</button></div></div>' +
-
-      '<div class="wv-controls" style="margin-bottom:16px">' +
-      '<button class="wv-nav-btn" data-action="cal-prev">'+ic.left+'</button>' +
-      '<div class="wv-range"><div class="wv-range-title">'+monthName+'</div>' +
-      '<div class="wv-range-sub">'+(calMonthOffset===0?'Current Month':calMonthOffset<0?Math.abs(calMonthOffset)+' month(s) ago':calMonthOffset+' month(s) ahead')+'</div></div>' +
-      (calMonthOffset!==0?'<button class="wv-today-btn" data-action="cal-today">This Month</button>':'') +
-      '<button class="wv-nav-btn" data-action="cal-next">'+ic.right+'</button></div>' +
-
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
-      '<div class="stat-card gb" style="flex:1;min-width:100px"><div class="lbl">WFO</div><div class="val" style="color:#3fb950">'+wfoCnt+'</div></div>' +
-      '<div class="stat-card ab" style="flex:1;min-width:100px"><div class="lbl">WFH</div><div class="val" style="color:#22d3ee">'+wfhCnt+'</div></div>' +
-      '<div class="stat-card amb" style="flex:1;min-width:100px"><div class="lbl">Leaves</div><div class="val" style="color:var(--amber)">'+(slCnt+clCnt+alCnt)+'</div><div class="sub">SL '+slCnt+' CL '+clCnt+' AL '+alCnt+'</div></div>' +
-      '<div class="stat-card pb" style="flex:1;min-width:100px"><div class="lbl">Opt Off</div><div class="val" style="color:var(--text3)">'+ooCnt+'</div></div>' +
-      '</div>' +
-
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;align-items:center">' +
-      Object.entries(STATUS_COLOR).map(([s,c]) =>
-        '<div style="display:flex;align-items:center;gap:4px">' +
-        '<div style="width:10px;height:10px;border-radius:3px;background:'+c+'"></div>' +
-        '<span style="font-size:.76rem;color:var(--text2);font-weight:600">'+s+'</span></div>'
-      ).join('') + '</div>' +
-
-      '<div class="cal-grid-wrap">' +
-      '<div class="cal-header">'+dayHeaders.map(d=>'<div class="cal-hcell">'+d+'</div>').join('')+'</div>' +
-      '<div class="cal-grid" id="cal-grid">'+cells+'</div>' +
-      '</div>' +
-
-      (markedDays===0&&calMonthOffset===0?'<div class="info-banner" style="margin-top:12px">📅 No records found. Click <strong>Sync</strong> to load your attendance from SharePoint, or go to <strong>Mark Attendance</strong> to start marking.</div>':'') +
-      '<div id="cal-edit-panel" style="margin-top:14px"></div>';
-
-    // Bind day clicks
-    const grid = el.querySelector('#cal-grid');
-    if (grid) {
-      grid.addEventListener('click', e => {
-        const cell = e.target.closest('.cal-cell');
-        if (!cell||!cell.dataset.dk||cell.classList.contains('cal-empty')) return;
-        const dk = cell.dataset.dk;
-        // Highlight
-        el.querySelectorAll('.cal-cell').forEach(c=>c.classList.toggle('cal-cell-active',c.dataset.dk===dk));
-        // Open edit panel
-        attDate = dk;
-        attSelectedStatus = (statusCache[dk]||{}).status||'';
-        const panel = q('#cal-edit-panel');
-        if (panel) {
-          panel.innerHTML = buildAttEditPanel(dk);
-          panel.scrollIntoView({behavior:'smooth',block:'nearest'});
-        }
-      });
-    }
-  }
-
   // MISSED NPT
   const NPT_TYPES = ['System Issue','Meeting Overrun','Training','Lack of Work','Power Outage','Network Issue','Admin Task','Other'];
   let nptActiveType = '';

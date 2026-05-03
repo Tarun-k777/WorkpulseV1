@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WorkPulse — Associate
 // @namespace    https://amazon.sharepoint.com/sites/teamdailytask/
-// @version      2.1.0
+// @version      3.1.0
 // @description  WorkPulse — Associate productivity + attendance tracker
 // @author       Your Team
 // @match        https://amazon.sharepoint.com/sites/teamdailytask/*
@@ -37,7 +37,8 @@
   const WH = 8;
   const TASK_TYPES = [
     'CT Production','Pre-Prod Production','Simulator Production',
-    'CT Audits','Pre-Prod Audits','Simulator Audits','Lack of Work','Ad-hoc Tasks'
+    'CT Audits','Pre-Prod Audits','Simulator Audits','Lack of Work',
+    'Meeting','Ad-hoc Tasks','Other'
   ];
   const NPT_TASKS  = ['Lack of Work'];
   const STATUSES   = ['WFO','WFH','SL','CL','AL','Optional Off'];
@@ -71,7 +72,9 @@
   let excelRows    = safeLoad('dtr_excel4',[]);
   let spQueue      = safeLoad('dtr_spq2',[]);
   let statusCache  = safeLoadObj('dtr_status2',{});   // { "YYYY-MM-DD": { status, process, task } }
-  let nptCache     = safeLoad('dtr_npt2',[]);           // [{date,minutes,type,desc}]
+  let nptCache      = safeLoad('dtr_npt2',[]);
+  let tkCustomCols  = safeLoad('dtr_tkcols4',[]);
+  let teamStatusCache = safeLoadObj('dtr_teamcache',{});
   let theme        = GM_getValue('dtr_theme4','dark');
 
   let currentSession = loadSession();
@@ -246,6 +249,10 @@
     .leave-type-btn{padding:4px 11px;border-radius:6px;border:1px solid rgba(210,153,34,.35);background:transparent;color:var(--amber);font-family:var(--font);font-size:.78rem;font-weight:600;cursor:pointer;transition:all .15s}
     .leave-type-btn.active{background:rgba(210,153,34,.2);border-color:var(--amber)}
     .comments-box{display:none;margin-top:10px}
+    .opt-note-toggle{display:flex;align-items:center;gap:5px;margin-top:8px;color:var(--accent);font-size:.82rem;font-weight:600;cursor:pointer;padding:4px 0;user-select:none}
+    .opt-note-toggle:hover{color:var(--accent2)}
+    .opt-note-box{margin-top:2px}
+    .req-star{color:var(--red)}
     .add-task-btn{width:100%;padding:9px;border-radius:8px;border:1px dashed var(--border2);background:transparent;color:var(--accent);cursor:pointer;font-family:var(--font);font-size:.92rem;font-weight:600;transition:all .15s;margin-bottom:12px}
     .add-task-btn:hover{background:rgba(88,166,255,.05);border-color:var(--accent)}
     .date-pill-row{display:flex;gap:8px;margin-top:4px;flex-wrap:wrap}
@@ -349,6 +356,14 @@
     .att-day-card.att-day-today .att-day-name{color:var(--accent);font-weight:800}
     .att-day-card.att-day-weekend{opacity:.5}
     .att-day-card.att-day-weekend:hover{opacity:.75}
+    .att-day-card.att-day-multi{outline:3px solid var(--accent2);outline-offset:2px;background:rgba(163,113,247,.08)!important}
+    .att-bulk-bar{background:var(--bg2);border:1px solid var(--accent2);border-radius:12px;padding:14px 18px;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;animation:fi .2s ease}
+    .att-bulk-status{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+    .att-bulk-btn{padding:7px 16px;border-radius:8px;border:2px solid var(--border);background:var(--bg3);color:var(--text2);font-family:var(--font);font-size:.85rem;font-weight:700;cursor:pointer;transition:all .15s}
+    .att-bulk-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.2)}
+    .att-bulk-btn.sel{border-color:var(--accent2);background:rgba(163,113,247,.12);color:var(--accent2)}
+    .att-select-toggle{padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);font-family:var(--font);font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s}
+    .att-select-toggle.active{background:rgba(163,113,247,.12);border-color:var(--accent2);color:var(--accent2)}
     .att-day-name{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text3);margin-bottom:2px}
     .att-day-date{font-size:.75rem;color:var(--text2);margin-bottom:6px}
     .att-day-icon{font-size:22px;margin-bottom:6px;line-height:1}
@@ -440,7 +455,13 @@
     root.addEventListener('keydown', handleKeydown);
     if (window.location.hostname.includes('sharepoint.com')) setTimeout(flushQueue, 2000);
     teamStatusCache = safeLoadObj('dtr_teamcache', {});
-    authState.loggedIn ? buildApp() : renderLogin();
+    if (authState.loggedIn) {
+      buildApp();
+      // Silently sync own attendance from SP so calendar is populated
+      setTimeout(() => fetchOwnAttendance(true), 1500);
+    } else {
+      renderLogin();
+    }
   }
 
   const q  = sel => root.querySelector(sel);
@@ -468,6 +489,8 @@
     authState = { loggedIn:true, name, sid:sess.sid };
     buildApp();
     toast('Welcome, ' + name + '!', 'ok');
+    // Load own attendance from SP immediately after login
+    setTimeout(() => fetchOwnAttendance(true), 1000);
   }
 
   function doLogout() {
@@ -552,10 +575,10 @@
       case 'clear-submit':  if (confirm('Clear all tasks?')) renderSubmit(); break;
       case 'pick-date':     pickDate(v); break;
       case 'do-submit':     doSubmit(); break;
-      case 'tracker-add':     trackerAdd(); break;
+      case 'tracker-add':     toast('Tracker is auto-populated from submissions','info'); break;
       case 'tracker-add-col': trackerAddCol(); break;
       case 'tracker-del-col': trackerDelCol(btn.dataset.key); break;
-      case 'tracker-del':   trackerDel(+btn.dataset.idx); break;
+      case 'tracker-del':     toast('Remove the task from Submit Tasks to remove it here','info'); break;
       case 'tracker-export':trackerExport(); break;
       case 'att-nav-prev':   attNavDate(-1); break;
       case 'att-week-prev': {
@@ -577,7 +600,42 @@
         renderMarkAttendance();
         break;
       }
-      case 'att-week-today': attWeekOffset=0; attDate=todayStr(); attSelectedStatus=(statusCache[attDate]||{}).status||''; renderMarkAttendance(); break;
+      case 'att-week-today':   attWeekOffset=0; attDate=todayStr(); attSelectedStatus=(statusCache[attDate]||{}).status||''; renderMarkAttendance(); break;
+      case 'att-toggle-bulk':  attToggleBulk(); break;
+      case 'att-multi-pick':   attMultiPick(v); break;
+      case 'att-bulk-apply':   attBulkApply(v); break;
+      case 'att-clear-select': attMultiSelect.clear(); renderMarkAttendance(); break;
+      case 'att-apply-week':   attApplyToWeek(); break;
+      case 'week-picker-apply': {
+        const status = v;
+        const picker = document.getElementById('att-week-picker');
+        const overwrite = picker?.querySelector('#wk-overwrite')?.checked || false;
+        if (picker) picker.remove();
+        (async () => {
+          const ws = getWeekStart(attWeekOffset);
+          const weekdays = Array.from({length:5}, (_,i) => { const d=new Date(ws);d.setDate(ws.getDate()+1+i);return d.toISOString().split('T')[0]; });
+          let saved=0;
+          for (const dk of weekdays) {
+            if (!overwrite && statusCache[dk]?.status) continue;
+            const entry = {status,process:'',task:'',date:dk,name:authState.name,updatedAt:new Date().toISOString()};
+            statusCache[dk]={...entry};
+            teamStatusCache[authState.name+'::'+dk]={status,process:'',task:''};
+            const ok=await postAttendance(entry); if(ok)saved++;
+          }
+          safeSaveObj('dtr_status2',statusCache); safeSaveObj('dtr_teamcache',teamStatusCache);
+          toast('✅ '+status+' applied to '+saved+' weekday(s)','ok');
+          renderMarkAttendance();
+        })();
+        break;
+      }
+      case 'week-picker-cancel': { const p=document.getElementById('att-week-picker'); if(p)p.remove(); break; }
+      case 'toggle-note': {
+        const n = btn.dataset.n;
+        const box = document.getElementById('opt-note-' + n);
+        const lbl = btn.querySelector('.opt-note-lbl');
+        if (box) { const shown = box.style.display === 'block'; box.style.display = shown ? 'none' : 'block'; if(lbl) lbl.textContent = shown ? 'Add optional note' : 'Hide note'; }
+        break;
+      }
       case 'att-pick-day': {
         attDate = v;
         attSelectedStatus = (statusCache[v]||{}).status||''; // set BEFORE buildAttEditPanel
@@ -592,6 +650,7 @@
       case 'att-nav-today': attNavToday(); break;
       case 'att-status':    attSelectStatus(v); break;
       case 'att-save':      attSave(); break;
+      case 'cal-sync':      toast('Loading your attendance...','info'); fetchOwnAttendance(false); break;
       case 'cal-prev':      calMonthOffset--; renderMyCalendar(); break;
       case 'cal-next':      calMonthOffset++; renderMyCalendar(); break;
       case 'cal-today':     calMonthOffset=0; renderMyCalendar(); break;
@@ -612,11 +671,7 @@
     const el = e.target;
     if (el.classList.contains('dtr-tt'))    onTaskTypeChange(el);
     if (el.classList.contains('dtr-wtype')) recalcNPT();
-    if (el.dataset.exfield) {
-      const idx = +el.closest('tr').dataset.idx;
-      const myRows = excelRows.filter(r => r.owner === authState.name);
-      if (myRows[idx]) { myRows[idx][el.dataset.exfield] = el.value; safeSave('dtr_excel4', excelRows); }
-    }
+    // exfield removed — tracker is now auto-populated from submissions
   }
 
   function handleKeydown(e) {
@@ -665,7 +720,7 @@
       '<div class="dtr-field"><label class="dtr-label">Work Type</label><select class="dtr-select dtr-wtype"><option value="Productive">Productive</option><option value="NPT">NPT</option></select></div>' +
       '<div class="dtr-field"><label class="dtr-label">Hours</label><input type="number" class="dtr-input dtr-hrs" min="0" max="8" step="0.5" placeholder="0.0"></div>' +
       '<div class="dtr-field"><label class="dtr-label">NPT Hours</label><div class="npt-box">—</div></div></div>' +
-      '<div class="comments-box"><div class="dtr-field" style="margin-top:4px"><label class="dtr-label">Ad-hoc Description *</label><textarea class="dtr-input dtr-adhoc" rows="2" placeholder="Describe task..." style="resize:vertical;min-height:52px"></textarea></div></div>' +
+      '<div class="comments-box" id="req-comment-' + n + '"><div class="dtr-field" style="margin-top:4px"><label class="dtr-label dtr-comment-label">Comments <span class="req-star">*</span></label><textarea class="dtr-input dtr-adhoc" rows="2" placeholder="Add details..." style="resize:vertical;min-height:52px"></textarea></div></div>' +'<div class="opt-note-toggle" data-action="toggle-note" data-n="' + n + '">📝 <span class="opt-note-lbl">Add optional note</span></div><div class="opt-note-box" id="opt-note-' + n + '" style="display:none"><div class="dtr-field" style="margin-top:6px"><label class="dtr-label">Note <span style="color:var(--text3);font-weight:400">(optional)</span></label><textarea class="dtr-input dtr-note" rows="2" placeholder="Any additional context..." style="resize:vertical;min-height:48px"></textarea></div></div>' +
       '<div class="leave-tag"><span>Leave:</span>' +
       '<button class="leave-type-btn active" data-action="leave-type" data-val="full">Full Day (8h)</button>' +
       '<button class="leave-type-btn" data-action="leave-type" data-val="half-am">Half AM (4h)</button>' +
@@ -677,7 +732,34 @@
   function setTaskMode(mode, btn) { qa('.mode-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); const ab = q('#a-add-btn'), cs = q('#a-cards'); if (mode === 'multi') { if (ab) ab.style.display = 'block'; if (cs && cs.querySelectorAll('.task-card').length === 1) addTaskCard(); } else { if (ab) ab.style.display = 'none'; if (cs) { const all = cs.querySelectorAll('.task-card'); for (let i = all.length - 1; i > 0; i--) all[i].remove(); taskCounter = 1; } } updateDayViz(); }
   function addTaskCard() { taskCounter++; const cs = q('#a-cards'); if (!cs) return; const d = document.createElement('div'); d.innerHTML = buildTaskCard(taskCounter, true); cs.appendChild(d.firstElementChild); updateDayViz(); }
   function renumberCards() { qa('.tc-num').forEach((el, i) => el.textContent = 'Task ' + (i+1)); taskCounter = qa('.task-card').length; }
-  function onTaskTypeChange(sel) { const card = sel.closest('.task-card'); if (!card) return; const v = sel.value, isLeave = v === 'Leave', isNPT = NPT_TASKS.includes(v)||isLeave, isAdhoc = v === 'Ad-hoc Tasks'; card.querySelector('.comments-box').style.display = isAdhoc ? 'block' : 'none'; card.querySelector('.leave-tag').classList.toggle('show', isLeave); if (isLeave) { makeLeave(card); return; } const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = isNPT ? 'NPT' : 'Productive'; recalcNPT(); updateDayViz(); }
+  function onTaskTypeChange(sel) {
+    const card = sel.closest('.task-card'); if (!card) return;
+    const v = sel.value;
+    const isLeave   = v === 'Leave';
+    const isNPT     = NPT_TASKS.includes(v) || isLeave;
+    const needsComment = v === 'Ad-hoc Tasks' || v === 'Other' || v === 'Meeting';
+    // Show/hide comment box
+    const box = card.querySelector('.comments-box');
+    if (box) box.style.display = needsComment ? 'block' : 'none';
+    // Req star visibility
+    const star = card.querySelector('.req-star');
+    if (star) star.style.display = needsComment ? '' : 'none';
+    // Show/hide opt note toggle
+    const optToggle = card.querySelector('.opt-note-toggle');
+    if (optToggle) optToggle.style.display = needsComment ? 'none' : 'flex';
+    // Update label text based on type
+    const lbl = card.querySelector('.dtr-comment-label');
+    const lblText = v==='Meeting' ? 'Meeting Details *' : v==='Other' ? 'Comments *' : 'Ad-hoc Description *';
+    if (lbl) lbl.textContent = lblText;
+    // Update placeholder
+    const ta = card.querySelector('.dtr-adhoc');
+    const phText = v==='Meeting' ? 'Meeting name, agenda, or purpose...' : v==='Other' ? 'Describe what you worked on...' : 'Describe the ad-hoc task...';
+    if (ta) ta.placeholder = phText;
+    card.querySelector('.leave-tag').classList.toggle('show', isLeave);
+    if (isLeave) { makeLeave(card); return; }
+    const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = isNPT ? 'NPT' : 'Productive';
+    recalcNPT(); updateDayViz();
+  }
   function makeLeave(card) { if (!card) return; card.classList.add('leave'); card.querySelector('.leave-tag').classList.add('show'); const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = 'NPT'; const hi = card.querySelector('.dtr-hrs'); if (hi) hi.value = ''; const nb = card.querySelector('.npt-box'); if (nb) { nb.textContent = '8.0h NPT'; nb.className = 'npt-box'; } const ts = card.querySelector('.dtr-tt'); if (ts) ts.value = 'Leave'; updateDayViz(); }
   function setLeaveType(card, type) { if (!card) return; card.querySelectorAll('.leave-type-btn').forEach(b => b.classList.toggle('active', b.dataset.val === type)); const h = type === 'full' ? 8 : 4; const ld = card.querySelector('.leave-hours-display'); if (ld) ld.textContent = h + '.0h'; const nb = card.querySelector('.npt-box'); if (nb) nb.textContent = h + '.0h NPT'; updateDayViz(); }
   function recalcNPT() { qa('.task-card').forEach(card => { if (card.classList.contains('leave')) return; const h = parseFloat(card.querySelector('.dtr-hrs')?.value)||0, wt = card.querySelector('.dtr-wtype')?.value||'Productive', nb = card.querySelector('.npt-box'); if (!nb) return; if (h===0){nb.textContent='—';nb.className='npt-box';return;} if (wt==='Productive'){nb.textContent=Math.max(0,WH-h).toFixed(1);nb.className='npt-box prod';}else{nb.textContent=h.toFixed(1)+' NPT';nb.className='npt-box';} }); }
@@ -688,10 +770,13 @@
     cards.forEach(card => {
       const isLeave = card.classList.contains('leave');
       if (isLeave) { const lh = card.querySelector('.leave-hours-display')?.textContent.includes('4')?4:8; tasks.push({employeeName:authState.name,taskType:'Leave',hours:0,npt:lh,workType:'NPT',adhoc:'',date:dateVal,submittedAt:new Date().toISOString()}); return; }
-      const tt = card.querySelector('.dtr-tt')?.value||'', wt = card.querySelector('.dtr-wtype')?.value||'Productive', h = parseFloat(card.querySelector('.dtr-hrs')?.value)||0, ad = card.querySelector('.dtr-adhoc')?.value?.trim()||'';
+      const tt = card.querySelector('.dtr-tt')?.value||'', wt = card.querySelector('.dtr-wtype')?.value||'Productive', h = parseFloat(card.querySelector('.dtr-hrs')?.value)||0;
+      const reqComment = card.querySelector('.dtr-adhoc')?.value?.trim()||'';
+      const optNote    = card.querySelector('.dtr-note')?.value?.trim()||'';
+      const ad = reqComment + (reqComment && optNote ? ' | Note: ' + optNote : optNote ? 'Note: ' + optNote : '');
       if (!tt) { toast('Select task type','err'); hasErr=true; return; }
       if (h<=0&&wt!=='NPT') { toast('Enter hours','err'); hasErr=true; return; }
-      if (tt==='Ad-hoc Tasks'&&!ad) { toast('Enter ad-hoc description','err'); hasErr=true; return; }
+      if ((tt==='Ad-hoc Tasks'||tt==='Other'||tt==='Meeting')&&!reqComment) { toast('Please add ' + (tt==='Meeting'?'meeting details':'a comment') + ' for ' + tt,'err'); hasErr=true; return; }
       const npt = wt==='NPT'?h:Math.max(0,WH-h);
       tasks.push({employeeName:authState.name,taskType:tt,hours:h,npt,workType:wt,adhoc:ad,date:dateVal,submittedAt:new Date().toISOString()});
     });
@@ -746,7 +831,6 @@
   }
 
   // ── MY TRACKER — auto-populated from submissions, custom columns ──────
-  let tkCustomCols = []; // extra user-added columns: [{key,label}]
 
   function getTrackerRows() {
     // Build rows from submissions for this associate
@@ -778,7 +862,7 @@
       {key:'hours',      label:'Hours'},
       {key:'nptHours',   label:'NPT Hours'},
       {key:'leave',      label:'Leave'},
-      {key:'adhoc',      label:'Ad-hoc Notes'},
+      {key:'adhoc',      label:'Comments / Ad-hoc'},
       {key:'submittedAt',label:'Submitted At'},
     ];
     const allCols = [...fixedCols, ...tkCustomCols];
@@ -882,7 +966,7 @@
     const rows = getTrackerRows();
     if (!rows.length) { toast('No submissions to export','err'); return; }
     const fixedCols = ['date','employee','taskType','workType','hours','nptHours','leave','adhoc','submittedAt'];
-    const fixedLabels = ['Date','Employee','Task Type','Work Type','Hours','NPT Hours','Leave','Ad-hoc Notes','Submitted At'];
+    const fixedLabels = ['Date','Employee','Task Type','Work Type','Hours','NPT Hours','Leave','Comments / Ad-hoc','Submitted At'];
     const customLabels = tkCustomCols.map(c=>c.label);
     const header = [...fixedLabels,...customLabels].join(',');
     const ms = mySubmissions();
@@ -915,6 +999,8 @@
   // MARK ATTENDANCE
   let attDate = todayStr();
   let attSelectedStatus = '';
+  let attMultiSelect    = new Set(); // dates selected for bulk apply
+  let attBulkMode       = false;     // whether bulk-select is active
 
   // ── MARK ATTENDANCE — weekly grid UI, any date editable ──────────────
   let attWeekOffset = 0;  // week offset for mark tab
@@ -923,7 +1009,6 @@
     const el = q('#view-mark'); if (!el) return;
     const today = todayStr();
     const ws = getWeekStart(attWeekOffset);
-    const wLabel = getWeekLabel(attWeekOffset);
     const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const dates = Array.from({length:7}, (_,i) => {
       const d = new Date(ws); d.setDate(ws.getDate()+i);
@@ -931,197 +1016,132 @@
       return {dk, day:days[i], label:d.toLocaleDateString('en-US',{month:'short',day:'numeric'}),
               isToday:dk===today, isWeekend:i===0||i===6, isFuture:dk>today};
     });
-    const STATUS_ICONS = {WFO:'WFO',WFH:'WFH',SL:'SL',CL:'CL',AL:'AL','Optional Off':'Off'};
+    const wLabel = getWeekLabel(attWeekOffset);
 
-    // Build week summary bar
-    const daySummary = dates.map(d => {
-      const st = (statusCache[d.dk]||{}).status||'';
-      return {dk:d.dk, st, day:d.day, label:d.label, isToday:d.isToday, isWeekend:d.isWeekend, isFuture:d.isFuture};
-    });
+    // Bulk apply status label
+    const bulkStatusLabel = {WFO:'WFO',WFH:'WFH',SL:'Sick Leave',CL:'Casual Leave',AL:'Annual Leave','Optional Off':'Optional Off'};
 
     el.innerHTML =
       '<div class="ph"><div class="ph-left"><div class="ph-title">Mark Attendance</div>' +
-      '<div class="ph-sub">Set your status for any day — click a day then pick status</div></div></div>' +
+      '<div class="ph-sub">Click a day to mark · Or use multi-select to apply one status to many days</div></div></div>' +
 
       // Week navigator
-      '<div class="wv-controls" style="margin-bottom:16px">' +
+      '<div class="wv-controls" style="margin-bottom:14px">' +
       '<button class="wv-nav-btn" data-action="att-week-prev">' + ic.left + '</button>' +
       '<div class="wv-range"><div class="wv-range-title">' + wLabel + '</div>' +
       '<div class="wv-range-sub">' + (attWeekOffset===0?'Current Week':attWeekOffset<0?Math.abs(attWeekOffset)+' week(s) ago':attWeekOffset+' week(s) ahead') + '</div></div>' +
       (attWeekOffset!==0?'<button class="wv-today-btn" data-action="att-week-today">This Week</button>':'') +
+
+      // Quick actions
+      '<button class="att-select-toggle' + (attBulkMode?' active':'') + '" data-action="att-toggle-bulk">' +
+      (attBulkMode ? '✕ Cancel Multi-select' : '☑ Multi-select') + '</button>' +
+      (!attBulkMode ? '<button class="att-select-toggle" data-action="att-apply-week" title="Apply one status to all weekdays this week">⚡ Apply to Week</button>' : '') +
       '<button class="wv-nav-btn" data-action="att-week-next">' + ic.right + '</button></div>' +
 
-      // Week day picker — compact row of day cards
+      // Bulk bar — shown when multi-select is active AND days are selected
+      (attBulkMode && attMultiSelect.size > 0 ?
+        '<div class="att-bulk-bar">' +
+        '<span style="font-size:.82rem;font-weight:700;color:var(--accent2)">' + attMultiSelect.size + ' day' + (attMultiSelect.size>1?'s':'') + ' selected — Apply:</span>' +
+        '<div class="att-bulk-status">' +
+        STATUSES.map(s => '<button class="att-bulk-btn" data-action="att-bulk-apply" data-val="' + s + '">' + s + '</button>').join('') +
+        '</div>' +
+        '<button class="btn btn-ghost btn-xs" data-action="att-clear-select">Clear</button>' +
+        '</div>' : '') +
+
+      // Week day row
       '<div class="att-week-row">' +
-      daySummary.map(d => {
-        const cfg = d.st ? STATUS_CFG[d.st] : null;
-        const isSelected = attDate === d.dk;
-        const icon = d.st ? '' : ''; // icon replaced by status label below
-        return '<div class="att-day-card' + (isSelected?' att-day-selected':'') + (d.isToday?' att-day-today':'') + (d.isWeekend?' att-day-weekend':'') + '"' +
-          ' data-action="att-pick-day" data-val="' + d.dk + '"' +
-          (cfg?' style="border-color:'+cfg.color+';background:'+cfg.bg+'"':'') + '>' +
+      dates.map(d => {
+        const st = (statusCache[d.dk]||{}).status||'';
+        const cfg = st ? STATUS_CFG[st] : null;
+        const isSelected = !attBulkMode && attDate === d.dk;
+        const isMulti    = attBulkMode && attMultiSelect.has(d.dk);
+        return '<div class="att-day-card' +
+          (isSelected ? ' att-day-selected' : '') +
+          (isMulti    ? ' att-day-multi'    : '') +
+          (d.isToday  ? ' att-day-today'    : '') +
+          (d.isWeekend? ' att-day-weekend'  : '') +
+          '" data-action="' + (attBulkMode ? 'att-multi-pick' : 'att-pick-day') + '" data-val="' + d.dk + '"' +
+          (cfg && !isMulti ? ' style="border-color:' + cfg.color + ';background:' + cfg.bg + '"' : '') + '>' +
           '<div class="att-day-name">' + d.day + '</div>' +
           '<div class="att-day-date">' + d.label + '</div>' +
-          (d.st
+          (st
             ? '<div class="att-day-dot" style="background:' + (cfg?cfg.color:'var(--text3)') + '"></div>' +
-              '<div class="att-day-status" style="color:' + (cfg?cfg.color:'var(--text3)') + ';font-size:.72rem;font-weight:800">' + d.st + '</div>'
+              '<div class="att-day-status" style="color:' + (cfg?cfg.color:'var(--text3)') + ';font-size:.72rem;font-weight:800">' + st + '</div>'
             : '<div class="att-day-dot" style="background:var(--border2)"></div>' +
-              '<div class="att-day-status" style="color:var(--text3)">' + (d.isWeekend?'Weekend':'Tap') + '</div>'
-          ) +
-          (isSelected?'<div class="att-day-active-dot"></div>':'') +
+              '<div class="att-day-status" style="color:var(--text3)">' + (d.isWeekend?'Weekend':'Tap') + '</div>') +
+          (isMulti ? '<div style="position:absolute;top:6px;right:6px;width:16px;height:16px;border-radius:50%;background:var(--accent2);display:flex;align-items:center;justify-content:center;font-size:9px;color:#fff;font-weight:800">✓</div>' : '') +
           '</div>';
       }).join('') + '</div>' +
 
-      // Editing panel for selected day
-      '<div id="att-edit-panel">' + buildAttEditPanel(attDate) + '</div>';
+      // Single-day edit panel (only in normal mode)
+      (!attBulkMode ? '<div id="att-edit-panel">' + buildAttEditPanel(attDate) + '</div>' :
+        (attMultiSelect.size === 0 ? '<div class="info-banner">👆 Tap multiple days above to select them, then choose a status to apply to all at once.</div>' : ''));
   }
 
-  function buildAttEditPanel(dk) {
-    // NOTE: does NOT touch attSelectedStatus — caller sets it before calling this
-    const existing = statusCache[dk] || {};
-    const selStatus = attSelectedStatus; // read current selection, do not overwrite
-    const today = todayStr();
-    const isFuture = dk > today;
-    const dateLabel = dk===today?'Today':dk===yesterdayStr()?'Yesterday':formatDay(dk);
-    const STATUS_ICONS = {WFO:'WFO',WFH:'WFH',SL:'SL',CL:'CL',AL:'AL','Optional Off':'Off'};
-    // Work details removed — captured in Tasks tab
-
-    return '<div class="att-edit-card">' +
-      '<div class="att-edit-header">' +
-      '<div><div class="att-edit-date">' + dateLabel + '</div>' +
-      '<div class="att-edit-datesub">' + formatDay(dk) + '</div></div>' +
-      (existing.status?'<span class="att-saved-pill" style="background:' + (STATUS_CFG[existing.status]||{}).bg + ';color:' + (STATUS_CFG[existing.status]||{}).color + '">✓ Saved: ' + existing.status + '</span>':'') +
-      '</div>' +
-      (isFuture?'<div class="info-banner" style="margin-bottom:14px">📅 Future date — you can pre-mark it.</div>':'') +
-      '<div class="status-grid" id="att-status-grid">' +
-      STATUSES.map(s => {
-        const cfg = STATUS_CFG[s], sel = (selStatus === s);
-        return '<div class="status-tile' + (sel?' selected':'') + '" data-action="att-status" data-val="' + s + '"' +
-          ' style="border-color:' + (sel?cfg.color:'var(--border)') + ';background:' + (sel?cfg.bg:'var(--bg2)') + '">' +
-          '<div class="sel-check" style="background:' + cfg.color + ';color:#fff">' + ic.check + '</div>' +
-          // icon removed for professional look
-          '<div class="status-tile-label">' + s + '</div>' +
-          '<div class="status-tile-sub">' + cfg.label + '</div></div>';
-      }).join('') + '</div>' +
-      // Work Details section removed
-      '<button class="att-save-btn" id="att-save-btn" data-action="att-save"' + (!selStatus?' disabled':'') + '>' +
-      ic.check + ' Save — ' + dateLabel + '</button>' +
-      '</div>';
-  }
-
-    function attNavDate(delta) {
-    const d = new Date(attDate+'T12:00:00'); d.setDate(d.getDate()+delta);
-    attDate = d.toISOString().split('T')[0];
-    attSelectedStatus = (statusCache[attDate]||{}).status||'';
-    // Keep week view in sync — calculate week offset from today
-    const todayD = new Date(todayStr()+'T12:00:00');
-    const selD = new Date(attDate+'T12:00:00');
-    const weekDiff = Math.floor((selD - todayD) / (7*24*60*60*1000));
-    // find Sunday of attDate week vs today's week
-    const todaySun = new Date(todayD); todaySun.setDate(todaySun.getDate()-todaySun.getDay());
-    const selSun   = new Date(selD);   selSun.setDate(selSun.getDate()-selSun.getDay());
-    attWeekOffset = Math.round((selSun-todaySun)/(7*24*60*60*1000));
+  function attToggleBulk() {
+    attBulkMode = !attBulkMode;
+    attMultiSelect.clear();
+    if (!attBulkMode) attSelectedStatus = (statusCache[attDate]||{}).status||'';
     renderMarkAttendance();
   }
-  function attNavToday() {
-    attDate = todayStr(); attWeekOffset = 0;
-    attSelectedStatus = (statusCache[attDate]||{}).status||'';
+
+  function attMultiPick(dk) {
+    if (attMultiSelect.has(dk)) attMultiSelect.delete(dk);
+    else attMultiSelect.add(dk);
     renderMarkAttendance();
   }
-  function attSelectStatus(status) {
-    attSelectedStatus = status;
+
+  async function attBulkApply(status) {
+    if (!status || attMultiSelect.size === 0) return;
+    const btn = q('[data-action="att-bulk-apply"][data-val="' + status + '"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
     const cfg = STATUS_CFG[status] || {};
-
-    // 1. Update tile highlights — pure DOM, no innerHTML rebuild
-    qa('#att-status-grid .status-tile').forEach(tile => {
-      const s = tile.dataset.val;
-      const tcfg = STATUS_CFG[s] || {};
-      const isSel = (s === status);
-      tile.classList.toggle('selected', isSel);
-      tile.style.borderColor = isSel ? tcfg.color : 'var(--border)';
-      tile.style.background  = isSel ? tcfg.bg    : 'var(--bg2)';
-    });
-
-    // Work Details removed — captured in Tasks tab
-
-    // 3. Enable/disable save button — pure DOM
-    const saveBtn = q('#att-save-btn');
-    if (saveBtn) {
-      saveBtn.disabled = !status;
-      if (status) saveBtn.removeAttribute('disabled');
+    let saved = 0;
+    for (const dk of attMultiSelect) {
+      const entry = { status, process:'', task:'', date:dk, name:authState.name, updatedAt:new Date().toISOString() };
+      statusCache[dk] = { ...entry, _fromSP: false };
+      teamStatusCache[authState.name+'::'+dk] = { status, process:'', task:'' };
+      const ok = await postAttendance(entry);
+      if (ok) saved++;
     }
-  }
-
-  async function attSave() {
-    if (!attSelectedStatus) { toast('Select a status first','err'); return; }
-    const proc = '', task = ''; // Work details removed from Attendance tab
-    const btn = q('[data-action="att-save"]'); if (btn) { btn.disabled=true; btn.textContent='Saving...'; }
-    const entry = { status:attSelectedStatus, process:proc, task, date:attDate, name:authState.name, updatedAt:new Date().toISOString() };
-    statusCache[attDate] = entry; safeSaveObj('dtr_status2', statusCache);
-    // Also update team cache so calendar reflects immediately
-    teamStatusCache[authState.name+'::'+attDate] = { status:entry.status, process:entry.process, task:entry.task };
+    safeSaveObj('dtr_status2', statusCache);
     safeSaveObj('dtr_teamcache', teamStatusCache);
-    const sent = await postAttendance(entry);
-    if (!sent) toast('Saved locally (SP sync pending)','info');
-    else toast('✅ Attendance saved — ' + attSelectedStatus, 'ok');
-    const btn2 = q('[data-action="att-save"]'); if (btn2) { btn2.disabled=false; btn2.innerHTML=ic.check+' Save Attendance'; }
-    // Update day card to show saved status without full re-render
-    qa('.att-day-card').forEach(card => {
-      if (card.dataset.val === attDate) {
-        const cfg = STATUS_CFG[attSelectedStatus]||{};
-        const iconEl = card.querySelector('.att-day-icon');
-        const stEl   = card.querySelector('.att-day-status');
-        if (iconEl) iconEl.textContent = ''; // emoji removed
-        if (stEl)   { stEl.textContent = attSelectedStatus; stEl.style.color = cfg.color||'var(--text3)'; }
-        card.style.borderColor = cfg.color||'var(--border)';
-        card.style.background  = cfg.bg||'var(--bg2)';
-      }
-    });
-    // Re-render edit panel to show updated saved badge
-    const p = q('#att-edit-panel');
-    if (p) p.innerHTML = buildAttEditPanel(attDate);
+    toast('✅ ' + status + ' applied to ' + saved + '/' + attMultiSelect.size + ' days', 'ok');
+    attMultiSelect.clear();
+    attBulkMode = false;
+    renderMarkAttendance();
   }
 
-  // MY CALENDAR — personal monthly attendance calendar
-  function renderMyCalendar() {
-    const el = q('#view-calendar'); if (!el) return;
-    const now = new Date();
-    const targetDate = new Date(now.getFullYear(), now.getMonth() + calMonthOffset, 1);
-    const year  = targetDate.getFullYear();
-    const month = targetDate.getMonth();
-    const monthName = targetDate.toLocaleDateString('en-US', {month:'long', year:'numeric'});
-    const today = todayStr();
+  async function attApplyToWeek() {
+    // Show a quick status picker overlay
+    const existing = q('#att-week-picker');
+    if (existing) { existing.remove(); return; }
+    const el = q('#view-mark'); if (!el) return;
+    const picker = document.createElement('div');
+    picker.id = 'att-week-picker';
+    picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:99999;background:var(--bg2);border:2px solid var(--accent2);border-radius:16px;padding:24px;min-width:360px;box-shadow:0 24px 64px rgba(0,0,0,.5);animation:fi .2s ease';
+    picker.innerHTML =
+      '<div style="font-size:.95rem;font-weight:700;color:var(--text);margin-bottom:4px">Apply to All Weekdays</div>' +
+      '<div style="font-size:.8rem;color:var(--text3);margin-bottom:16px">Mon–Fri this week · Only unset days</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">' +
+      STATUSES.map(s => {
+        const cfg = STATUS_CFG[s]||{};
+        return '<button data-action="week-picker-apply" data-val="' + s + '" style="padding:10px 8px;border-radius:10px;border:2px solid ' + cfg.color + ';background:' + cfg.bg + ';color:' + cfg.color + ';font-weight:700;font-size:.85rem;cursor:pointer;font-family:var(--font)">' + s + '</button>';
+      }).join('') +
+      '</div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center">' +
+      '<label style="font-size:.78rem;color:var(--text3);display:flex;align-items:center;gap:6px"><input type="checkbox" id="wk-overwrite" style="accent-color:var(--accent2)"> Overwrite already-marked days</label>' +
+      '<button data-action="week-picker-cancel" style="padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;font-family:var(--font);font-size:.82rem">Cancel</button>' +
+      '</div>';
+    document.getElementById('dtr-root-outer').appendChild(picker);
+    // Close on outside click
+    setTimeout(() => {
+      document.addEventListener('click', function dismiss(e) {
+        if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', dismiss); }
+      });
+    }, 100);
 
-    // First day of month and total days
-    const firstDay  = new Date(year, month, 1).getDay(); // 0=Sun
-    const totalDays = new Date(year, month + 1, 0).getDate();
-
-    // Build stats for this month
-    const monthKey = year + '-' + String(month+1).padStart(2,'0');
-    const monthEntries = Object.entries(statusCache).filter(([dk]) => dk.startsWith(monthKey));
-    const wfoCnt = monthEntries.filter(([,v]) => v.status==='WFO').length;
-    const wfhCnt = monthEntries.filter(([,v]) => v.status==='WFH').length;
-    const slCnt  = monthEntries.filter(([,v]) => v.status==='SL').length;
-    const clCnt  = monthEntries.filter(([,v]) => v.status==='CL').length;
-    const alCnt  = monthEntries.filter(([,v]) => v.status==='AL').length;
-    const ooCnt  = monthEntries.filter(([,v]) => v.status==='Optional Off').length;
-    const markedDays = monthEntries.length;
-
-    // Count working days in month (Mon-Fri)
-    let workingDays = 0;
-    for (let d = 1; d <= totalDays; d++) {
-      const dow = new Date(year, month, d).getDay();
-      if (dow !== 0 && dow !== 6) workingDays++;
-    }
-
-    const STATUS_COLOR = {
-      WFO:'#3fb950', WFH:'#22d3ee', SL:'#f85149',
-      CL:'#d29922',  AL:'#a371f7', 'Optional Off':'#6b7280'
-    };
-    const STATUS_SHORT = {
-      WFO:'WFO', WFH:'WFH', SL:'SL', CL:'CL', AL:'AL', 'Optional Off':'Off'
-    };
-
+    // week-picker-apply handled in handleClick
     // Build calendar grid cells
     const dayHeaders = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     let cells = '';
@@ -1157,7 +1177,8 @@
 
     el.innerHTML =
       '<div class="ph"><div class="ph-left"><div class="ph-title">My Attendance Calendar</div>' +
-      '<div class="ph-sub">Your personal attendance history — click any day to edit</div></div></div>' +
+      '<div class="ph-sub">Your personal attendance history — click any day to mark or edit</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="cal-sync">' + ic.sync + ' Sync</button></div></div>' +
 
       // Month navigator
       '<div class="wv-controls" style="margin-bottom:16px">' +
@@ -1563,19 +1584,68 @@
     }, 2500);
   }
 
-    let teamStatusCache = {};
+  function fetchOwnAttendance(silent) {
+    // Fetch only THIS user's attendance records from SP → populate statusCache
+    if (!authState.name) return;
+    const nameEsc = authState.name.replace(/'/g,"''");
+    const url = SP.SITE + "/_api/web/lists/GetByTitle('" + SP.STATUS_LIST + "')/items" +
+      "?$filter=EmployeeName eq '" + nameEsc + "'" +
+      "&$top=5000&$orderby=StatusDate desc" +
+      "&$select=EmployeeName,StatusDate,WorkStatus,Process,TaskNotes";
+    GM_xmlhttpRequest({
+      method:'GET', url:url,
+      headers:{'Accept':'application/json;odata=verbose'},
+      withCredentials:true,
+      onload: res => {
+        try {
+          const items = JSON.parse(res.responseText).d.results || [];
+          items.forEach(it => {
+            const rawDate = it.StatusDate || '';
+            const dk = rawDate.includes('T') ? rawDate.split('T')[0] : rawDate;
+            if (dk) {
+              // Only update if SP has a value — don't overwrite newer local data
+              if (!statusCache[dk] || statusCache[dk]._fromSP) {
+                statusCache[dk] = {
+                  status:  it.WorkStatus || '',
+                  process: it.Process    || '',
+                  task:    it.TaskNotes  || '',
+                  _fromSP: true
+                };
+              }
+            }
+          });
+          safeSaveObj('dtr_status2', statusCache);
+          if (!silent) toast('✅ Attendance loaded from SharePoint','ok');
+          // Re-render whichever view is active
+          if (currentView === 'calendar')  renderMyCalendar();
+          if (currentView === 'mark')      renderMarkAttendance();
+          if (currentView === 'analytics') renderAnalytics();
+          // Update topbar status badge if today is now known
+          const todaySt = statusCache[todayStr()];
+          const pill = root.querySelector('.dtr-topbar-r .sp');
+          if (pill && todaySt) {
+            pill.className = 'sp sp-' + todaySt.status.toLowerCase().replace(' ','-');
+            pill.textContent = todaySt.status;
+          }
+        } catch(ex) {
+          if (!silent) toast('❌ Attendance sync error: ' + ex.message,'err');
+        }
+      },
+      onerror: () => { if (!silent) toast('❌ Cannot reach SharePoint','err'); }
+    });
+  }
+
   function fetchAllAttendance() {
-    GM_xmlhttpRequest({method:'GET',url:SP.SITE+'/_api/web/lists/GetByTitle(\''+SP.STATUS_LIST+'\')/items?$top=5000&$orderby=StatusDate%20desc&$select=EmployeeName,StatusDate,WorkStatus,Process,TaskNotes',headers:{'Accept':'application/json;odata=verbose'},withCredentials:true,
+    // Fetch all team attendance (for team cache) + own attendance (for calendar)
+    fetchOwnAttendance(false);
+    GM_xmlhttpRequest({method:'GET',url:SP.SITE+"/_api/web/lists/GetByTitle('"+SP.STATUS_LIST+"')/items?$top=5000&$orderby=StatusDate%20desc&$select=EmployeeName,StatusDate,WorkStatus,Process,TaskNotes",headers:{'Accept':'application/json;odata=verbose'},withCredentials:true,
     onload:res=>{try{
       const items=JSON.parse(res.responseText).d.results||[];
       teamStatusCache={};
       items.forEach(it=>{const name=it.EmployeeName||'';const rawDate=it.StatusDate||'';const dk=rawDate.includes('T')?rawDate.split('T')[0]:rawDate;if(name&&dk)teamStatusCache[name+'::'+dk]={status:it.WorkStatus||'',process:it.Process||'',task:it.TaskNotes||''};});
-      // Merge own local data
       Object.entries(statusCache).forEach(([dk,v])=>{teamStatusCache[authState.name+'::'+dk]={status:v.status,process:v.process||'',task:v.task||''};});
       safeSaveObj('dtr_teamcache',teamStatusCache);
-      toast('Team attendance synced ✓','ok');
-      if(currentView==='calendar')renderMyCalendar();
-    }catch{toast('Sync error','err');}},onerror:()=>toast('SP unreachable','err')});
+    }catch{}},onerror:()=>{}});
   }
   // flushQueue defined above
   // flushQueueManual defined above

@@ -251,6 +251,9 @@
     .comments-box{display:none;margin-top:10px}
     .opt-note-toggle{display:flex;align-items:center;gap:5px;margin-top:8px;color:var(--accent);font-size:.82rem;font-weight:600;cursor:pointer;padding:4px 0;user-select:none}
     .opt-note-toggle:hover{color:var(--accent2)}
+    .req-star{color:var(--red)}
+    .opt-note-toggle{display:flex;align-items:center;gap:5px;margin-top:8px;color:var(--accent);font-size:.82rem;font-weight:600;cursor:pointer;padding:4px 0;user-select:none}
+    .opt-note-toggle:hover{color:var(--accent2)}
     .opt-note-box{margin-top:2px}
     .req-star{color:var(--red)}
     .add-task-btn{width:100%;padding:9px;border-radius:8px;border:1px dashed var(--border2);background:transparent;color:var(--accent);cursor:pointer;font-family:var(--font);font-size:.92rem;font-weight:600;transition:all .15s;margin-bottom:12px}
@@ -356,6 +359,12 @@
     .att-day-card.att-day-today .att-day-name{color:var(--accent);font-weight:800}
     .att-day-card.att-day-weekend{opacity:.5}
     .att-day-card.att-day-weekend:hover{opacity:.75}
+    .att-day-card.att-multi{outline:3px solid var(--accent2);outline-offset:2px;background:rgba(163,113,247,.08)!important}
+    .att-bulk-bar{background:var(--bg2);border:1px solid var(--accent2);border-radius:12px;padding:14px 18px;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;animation:fi .2s ease}
+    .att-bulk-btn{padding:7px 14px;border-radius:8px;border:2px solid var(--border);background:var(--bg3);color:var(--text2);font-family:var(--font);font-size:.85rem;font-weight:700;cursor:pointer;transition:all .15s}
+    .att-bulk-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.2)}
+    .att-select-toggle{padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);font-family:var(--font);font-size:.82rem;font-weight:600;cursor:pointer;transition:all .15s}
+    .att-select-toggle.on{background:rgba(163,113,247,.12);border-color:var(--accent2);color:var(--accent2)}
     .att-day-card.att-day-multi{outline:3px solid var(--accent2);outline-offset:2px;background:rgba(163,113,247,.08)!important}
     .att-bulk-bar{background:var(--bg2);border:1px solid var(--accent2);border-radius:12px;padding:14px 18px;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;animation:fi .2s ease}
     .att-bulk-status{display:flex;gap:6px;flex-wrap:wrap;flex:1}
@@ -648,6 +657,13 @@
       }
       case 'att-nav-next':  attNavDate(+1); break;
       case 'att-nav-today': attNavToday(); break;
+      case 'toggle-opt-note': {
+        const n = btn.dataset.n;
+        const box = document.getElementById('opt-note-' + n);
+        const lbl = btn.querySelector('.opt-note-lbl');
+        if (box) { const shown = box.style.display==='block'; box.style.display=shown?'none':'block'; if(lbl) lbl.textContent=shown?'Add optional note':'Hide note'; }
+        break;
+      }
       case 'att-status':    attSelectStatus(v); break;
       case 'att-save':      attSave(); break;
       case 'cal-sync':      toast('Loading your attendance...','info'); fetchOwnAttendance(false); break;
@@ -1003,65 +1019,60 @@
   let attBulkMode       = false;     // whether bulk-select is active
 
   // ── MARK ATTENDANCE — weekly grid UI, any date editable ──────────────
-  let attWeekOffset = 0;  // week offset for mark tab
+  let attWeekOffset   = 0;
 
   function renderMarkAttendance() {
     const el = q('#view-mark'); if (!el) return;
+    if (!attDate) attDate = todayStr();
     const today = todayStr();
     const ws = getWeekStart(attWeekOffset);
+    const wLabel = getWeekLabel(attWeekOffset);
     const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const dates = Array.from({length:7}, (_,i) => {
       const d = new Date(ws); d.setDate(ws.getDate()+i);
       const dk = d.toISOString().split('T')[0];
       return {dk, day:days[i], label:d.toLocaleDateString('en-US',{month:'short',day:'numeric'}),
-              isToday:dk===today, isWeekend:i===0||i===6, isFuture:dk>today};
+              isToday:dk===today, isWeekend:i===0||i===6};
     });
-    const wLabel = getWeekLabel(attWeekOffset);
-
-    // Bulk apply status label
-    const bulkStatusLabel = {WFO:'WFO',WFH:'WFH',SL:'Sick Leave',CL:'Casual Leave',AL:'Annual Leave','Optional Off':'Optional Off'};
 
     el.innerHTML =
       '<div class="ph"><div class="ph-left"><div class="ph-title">Mark Attendance</div>' +
-      '<div class="ph-sub">Click a day to mark · Or use multi-select to apply one status to many days</div></div></div>' +
+      '<div class="ph-sub">Click a day · Multi-select for bulk apply · Apply to Week for whole week</div></div></div>' +
 
-      // Week navigator
+      // Week navigator + controls
       '<div class="wv-controls" style="margin-bottom:14px">' +
       '<button class="wv-nav-btn" data-action="att-week-prev">' + ic.left + '</button>' +
       '<div class="wv-range"><div class="wv-range-title">' + wLabel + '</div>' +
-      '<div class="wv-range-sub">' + (attWeekOffset===0?'Current Week':attWeekOffset<0?Math.abs(attWeekOffset)+' week(s) ago':attWeekOffset+' week(s) ahead') + '</div></div>' +
+      '<div class="wv-range-sub">' + (attWeekOffset===0?'Current Week':attWeekOffset<0?Math.abs(attWeekOffset)+' week(s) ago':attWeekOffset+' ahead') + '</div></div>' +
       (attWeekOffset!==0?'<button class="wv-today-btn" data-action="att-week-today">This Week</button>':'') +
-
-      // Quick actions
-      '<button class="att-select-toggle' + (attBulkMode?' active':'') + '" data-action="att-toggle-bulk">' +
-      (attBulkMode ? '✕ Cancel Multi-select' : '☑ Multi-select') + '</button>' +
-      (!attBulkMode ? '<button class="att-select-toggle" data-action="att-apply-week" title="Apply one status to all weekdays this week">⚡ Apply to Week</button>' : '') +
+      '<button class="att-select-toggle' + (attBulkMode?' on':'') + '" data-action="att-toggle-bulk">' + (attBulkMode?'✕ Cancel':'☑ Multi-select') + '</button>' +
+      (!attBulkMode?'<button class="att-select-toggle" data-action="att-apply-week">⚡ Apply to Week</button>':'') +
       '<button class="wv-nav-btn" data-action="att-week-next">' + ic.right + '</button></div>' +
 
-      // Bulk bar — shown when multi-select is active AND days are selected
+      // Bulk action bar (when days selected)
       (attBulkMode && attMultiSelect.size > 0 ?
         '<div class="att-bulk-bar">' +
-        '<span style="font-size:.82rem;font-weight:700;color:var(--accent2)">' + attMultiSelect.size + ' day' + (attMultiSelect.size>1?'s':'') + ' selected — Apply:</span>' +
-        '<div class="att-bulk-status">' +
+        '<span style="font-size:.82rem;font-weight:700;color:var(--accent2)">' + attMultiSelect.size + ' day(s) selected — Apply:</span>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;flex:1">' +
         STATUSES.map(s => '<button class="att-bulk-btn" data-action="att-bulk-apply" data-val="' + s + '">' + s + '</button>').join('') +
         '</div>' +
-        '<button class="btn btn-ghost btn-xs" data-action="att-clear-select">Clear</button>' +
+        '<button class="btn btn-ghost btn-xs" data-action="att-clear-sel">Clear</button>' +
         '</div>' : '') +
 
-      // Week day row
+      // Week day cards
       '<div class="att-week-row">' +
       dates.map(d => {
-        const st = (statusCache[d.dk]||{}).status||'';
+        const st  = (statusCache[d.dk]||{}).status||'';
         const cfg = st ? STATUS_CFG[st] : null;
-        const isSelected = !attBulkMode && attDate === d.dk;
-        const isMulti    = attBulkMode && attMultiSelect.has(d.dk);
+        const isSel   = !attBulkMode && attDate === d.dk;
+        const isMulti = attBulkMode && attMultiSelect.has(d.dk);
         return '<div class="att-day-card' +
-          (isSelected ? ' att-day-selected' : '') +
-          (isMulti    ? ' att-day-multi'    : '') +
-          (d.isToday  ? ' att-day-today'    : '') +
-          (d.isWeekend? ' att-day-weekend'  : '') +
-          '" data-action="' + (attBulkMode ? 'att-multi-pick' : 'att-pick-day') + '" data-val="' + d.dk + '"' +
-          (cfg && !isMulti ? ' style="border-color:' + cfg.color + ';background:' + cfg.bg + '"' : '') + '>' +
+          (isSel   ? ' att-day-selected' : '') +
+          (isMulti ? ' att-multi'        : '') +
+          (d.isToday ? ' att-day-today'  : '') +
+          (d.isWeekend ? ' att-day-weekend' : '') + '"' +
+          ' data-action="' + (attBulkMode?'att-multi-pick':'att-pick-day') + '" data-val="' + d.dk + '"' +
+          (cfg && !isMulti ? ' style="border-color:'+cfg.color+';background:'+cfg.bg+'"':'') + '>' +
           '<div class="att-day-name">' + d.day + '</div>' +
           '<div class="att-day-date">' + d.label + '</div>' +
           (st
@@ -1069,22 +1080,20 @@
               '<div class="att-day-status" style="color:' + (cfg?cfg.color:'var(--text3)') + ';font-size:.72rem;font-weight:800">' + st + '</div>'
             : '<div class="att-day-dot" style="background:var(--border2)"></div>' +
               '<div class="att-day-status" style="color:var(--text3)">' + (d.isWeekend?'Weekend':'Tap') + '</div>') +
-          (isMulti ? '<div style="position:absolute;top:6px;right:6px;width:16px;height:16px;border-radius:50%;background:var(--accent2);display:flex;align-items:center;justify-content:center;font-size:9px;color:#fff;font-weight:800">✓</div>' : '') +
+          (isMulti?'<div style="position:absolute;top:6px;right:6px;width:16px;height:16px;border-radius:50%;background:var(--accent2);display:flex;align-items:center;justify-content:center;font-size:9px;color:#fff;font-weight:800">✓</div>':'') +
+          (isSel?'<div class="att-day-active-dot"></div>':'') +
           '</div>';
       }).join('') + '</div>' +
 
-      // Single-day edit panel (only in normal mode)
+      // Edit panel (single mode) or hint (bulk mode)
       (!attBulkMode
         ? '<div id="att-edit-panel" style="margin-top:8px">' + buildAttEditPanel(attDate) + '</div>'
-        : (attMultiSelect.size===0
-            ? '<div class="info-banner" style="margin-top:8px">☑️ Tap days above to select them, then pick a status to apply to all.</div>'
-            : ''));
+        : (attMultiSelect.size===0 ? '<div class="info-banner" style="margin-top:8px">☑️ Tap days above to select, then choose a status to apply to all at once.</div>' : ''));
   }
 
   function attToggleBulk() {
     attBulkMode = !attBulkMode;
     attMultiSelect.clear();
-    if (!attBulkMode) attSelectedStatus = (statusCache[attDate]||{}).status||'';
     renderMarkAttendance();
   }
 
@@ -1095,24 +1104,46 @@
   }
 
   async function attBulkApply(status) {
-    if (!status || attMultiSelect.size === 0) return;
-    const btn = q('[data-action="att-bulk-apply"][data-val="' + status + '"]');
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
-    const cfg = STATUS_CFG[status] || {};
+    if (!status || attMultiSelect.size===0) return;
     let saved = 0;
     for (const dk of attMultiSelect) {
-      const entry = { status, process:'', task:'', date:dk, name:authState.name, updatedAt:new Date().toISOString() };
-      statusCache[dk] = { ...entry, _fromSP: false };
-      teamStatusCache[authState.name+'::'+dk] = { status, process:'', task:'' };
-      const ok = await postAttendance(entry);
-      if (ok) saved++;
+      const entry = {status, process:'', task:'', date:dk, name:authState.name, updatedAt:new Date().toISOString()};
+      statusCache[dk] = {...entry};
+      teamStatusCache[authState.name+'::'+dk] = {status, process:'', task:''};
+      const ok = await postAttendance(entry); if(ok) saved++;
     }
     safeSaveObj('dtr_status2', statusCache);
     safeSaveObj('dtr_teamcache', teamStatusCache);
-    toast('✅ ' + status + ' applied to ' + saved + '/' + attMultiSelect.size + ' days', 'ok');
-    attMultiSelect.clear();
-    attBulkMode = false;
+    toast('✅ '+status+' applied to '+saved+'/'+attMultiSelect.size+' days','ok');
+    attMultiSelect.clear(); attBulkMode=false;
     renderMarkAttendance();
+  }
+
+  async function attApplyToWeek() {
+    // Modal picker
+    const existing = document.getElementById('att-week-picker');
+    if (existing) { existing.remove(); return; }
+    const picker = document.createElement('div');
+    picker.id = 'att-week-picker';
+    picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:99999;background:var(--bg2);border:2px solid var(--accent2);border-radius:16px;padding:24px;min-width:340px;box-shadow:0 24px 64px rgba(0,0,0,.5)';
+    picker.innerHTML =
+      '<div style="font-weight:700;color:var(--text);margin-bottom:4px;font-size:.95rem">Apply to All Weekdays</div>' +
+      '<div style="font-size:.8rem;color:var(--text3);margin-bottom:14px">Mon–Fri of current week</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">' +
+      STATUSES.map(s => {
+        const cfg = STATUS_CFG[s]||{};
+        return '<button data-action="week-pick-apply" data-val="' + s + '" style="padding:10px 6px;border-radius:10px;border:2px solid '+cfg.color+';background:'+cfg.bg+';color:'+cfg.color+';font-weight:700;font-size:.85rem;cursor:pointer;font-family:var(--font)">' + s + '</button>';
+      }).join('') + '</div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center">' +
+      '<label style="font-size:.78rem;color:var(--text3);display:flex;align-items:center;gap:6px"><input type="checkbox" id="wk-overwrite" style="accent-color:var(--accent2)"> Overwrite marked days</label>' +
+      '<button data-action="week-pick-cancel" style="padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;font-family:var(--font);font-size:.82rem">Cancel</button>' +
+      '</div>';
+    (document.getElementById('dtr-root-outer')||document.body).appendChild(picker);
+    setTimeout(() => {
+      document.addEventListener('click', function dismiss(e) {
+        if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', dismiss); }
+      });
+    }, 100);
   }
 
 

@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         WorkPulse — Associate
 // @namespace    https://amazon.sharepoint.com/sites/teamdailytask/
-// @version      3.1.0
+// @version      2.10.0
 // @description  WorkPulse — Associate productivity + attendance tracker
 // @author       Your Team
 // @match        https://amazon.sharepoint.com/sites/teamdailytask/*
 // @match        https://amazon.sharepoint.com/*
 // @match        https://www.grainger.com/*
-// @match        https://*.grainger.com/*
+// @match        https://share.amazon.com/Pages/default.aspx
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -42,6 +42,7 @@
   ];
   const NPT_TASKS  = ['Lack of Work'];
   const STATUSES   = ['WFO','WFH','SL','CL','AL','Optional Off'];
+  const ASSOCIATES = ['Alekhyya','Ameralih','Anshdeep','Arvindon','Awaispsh','Bhanupru','Bhurak','Bsv','Dvsanjay','Edharapa','Gsridev','Haranbhe','Harikavr','Harusn','Heswitha','Hshyaraj','Inagajag','Joldapka','Kalakuh','Kenumula','Kuparima','Madhureg','Malsrira','Mbahyal','Meguvval','Mppunna','Pankae','Piyushts','Pmred','Psiranga','Rajawbab','Rayyanms','Remoch','Sheebyme','Siqmadhu','Sofiykja','Sundkraj','Tumkurs','Unairite','Varmana','Vpulluri','Zshahnaz']; // authorised logins
   const PROCS      = ['Preprod Testing','Chat Transcripts','Adhoc','Quality Check','Training','Other'];
   const COLORS     = ['#6366f1','#8b5cf6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#84cc16'];
   const STATUS_CFG = {
@@ -163,7 +164,11 @@
     .dtr-label{font-size:.82rem;font-weight:600;color:var(--text2);letter-spacing:.2px}
     .dtr-input,.dtr-select,.dtr-textarea{padding:8px 11px;border-radius:var(--radius);background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:.96rem;transition:border-color .15s,box-shadow .15s;width:100%;appearance:none}
     .dtr-input:focus,.dtr-select:focus,.dtr-textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(88,166,255,.15)}
-    .dtr-input::placeholder{color:var(--text3)}
+    .dtr-input,.dtr-select,.dtr-textarea{color:var(--text)!important;-webkit-text-fill-color:var(--text)!important}
+    .dtr-input[readonly]{opacity:1!important;color:var(--text)!important;-webkit-text-fill-color:var(--text)!important;background:var(--bg3)!important;cursor:default}
+    .dtr-input::placeholder,.dtr-textarea::placeholder{color:var(--text3)!important;-webkit-text-fill-color:var(--text3)!important}
+    input[type=date].dtr-input::-webkit-calendar-picker-indicator{filter:invert(.6)}
+    .dtr-input:disabled,.dtr-select:disabled{opacity:.5!important;cursor:not-allowed}
     .dtr-select option{background:var(--bg2)}
     .dtr-textarea{resize:vertical}
 
@@ -466,8 +471,10 @@
     teamStatusCache = safeLoadObj('dtr_teamcache', {});
     if (authState.loggedIn) {
       buildApp();
-      // Silently sync own attendance from SP so calendar is populated
+      // Silently sync own data from SP on startup
       setTimeout(() => fetchOwnAttendance(true), 1500);
+      setTimeout(() => fetchOwnTasks(true),       3000);
+      setTimeout(() => fetchOwnNPT(true),         4500);
     } else {
       renderLogin();
     }
@@ -477,29 +484,49 @@
   const qa = sel => root.querySelectorAll(sel);
 
   function renderLogin() {
-    root.innerHTML = `<div id="view-login"><div class="login-card">
-      <div class="login-logo">${ic.logo}</div>
-      <div class="login-title">WorkPulse</div>
-      <div class="login-sub">Enter your full name to start</div>
-      <div class="login-err" id="login-err"></div>
-      <div class="dtr-field"><label class="dtr-label">Full Name</label>
-        <input type="text" id="login-name" class="dtr-input" placeholder="e.g. John Smith" autocomplete="off">
-      </div>
-      <button class="btn btn-primary btn-full" data-action="do-login" style="margin-top:4px">${ic.submit} Start Session</button>
-    </div></div><div id="dtr-toast"></div>`;
+    // Build options from ASSOCIATES array dynamically
+    const opts = '<option value="">— Select your login —</option>' +
+      ASSOCIATES.map(a => '<option value="' + a + '">' + a + '</option>').join('');
+
+    root.innerHTML =
+      '<div id="view-login" style="display:flex;align-items:center;justify-content:center;min-height:100%">' +
+      '<div class="login-card">' +
+      '<div class="login-logo">' + ic.logo + '</div>' +
+      '<div class="login-title">WorkPulse</div>' +
+      '<div class="login-sub">Select your login to start</div>' +
+      '<div class="login-err" id="login-err" style="color:var(--red);font-size:.875rem;margin-bottom:10px;min-height:18px"></div>' +
+      '<div class="dtr-field">' +
+      '<label class="dtr-label">Your Login</label>' +
+      '<select id="login-name" class="dtr-select" style="font-size:1rem;padding:10px 12px">' + opts + '</select>' +
+      '</div>' +
+      '<button class="btn btn-primary btn-full" data-action="do-login" style="margin-top:8px;padding:12px;font-size:1rem">' +
+      ic.submit + ' Start Session' +
+      '</button>' +
+      '</div></div>' +
+      '<div id="dtr-toast"></div>';
+
+    // Pre-select if session exists (returning user)
+    const saved = loadSession();
+    if (saved && saved.name) {
+      const sel = q('#login-name');
+      if (sel) sel.value = saved.name;
+    }
     setTimeout(() => { const e = q('#login-name'); if (e) e.focus(); }, 100);
   }
 
   function doLogin() {
-    const el = q('#login-name'), name = el ? el.value.trim() : '';
+    const el = q('#login-name'), name = el ? el.value : '';
     const err = q('#login-err');
-    if (!name || name.length < 2) { if (err) err.textContent = 'Please enter your full name (min 2 chars).'; return; }
+    if (!name) { if (err) err.textContent = 'Please select your login.'; return; }
+    if (!ASSOCIATES.includes(name)) { if (err) err.textContent = 'Invalid login selected.'; return; }
     const sess = saveSession(name);
     authState = { loggedIn:true, name, sid:sess.sid };
     buildApp();
     toast('Welcome, ' + name + '!', 'ok');
-    // Load own attendance from SP immediately after login
+    // Sync all own data from SP after login
     setTimeout(() => fetchOwnAttendance(true), 1000);
+    setTimeout(() => fetchOwnTasks(true),       2500);
+    setTimeout(() => fetchOwnNPT(true),         4000);
   }
 
   function doLogout() {
@@ -615,29 +642,8 @@
       case 'att-bulk-apply':   attBulkApply(v); break;
       case 'att-clear-select': attMultiSelect.clear(); renderMarkAttendance(); break;
       case 'att-apply-week':   attApplyToWeek(); break;
-      case 'week-picker-apply': {
-        const status = v;
-        const picker = document.getElementById('att-week-picker');
-        const overwrite = picker?.querySelector('#wk-overwrite')?.checked || false;
-        if (picker) picker.remove();
-        (async () => {
-          const ws = getWeekStart(attWeekOffset);
-          const weekdays = Array.from({length:5}, (_,i) => { const d=new Date(ws);d.setDate(ws.getDate()+1+i);return d.toISOString().split('T')[0]; });
-          let saved=0;
-          for (const dk of weekdays) {
-            if (!overwrite && statusCache[dk]?.status) continue;
-            const entry = {status,process:'',task:'',date:dk,name:authState.name,updatedAt:new Date().toISOString()};
-            statusCache[dk]={...entry};
-            teamStatusCache[authState.name+'::'+dk]={status,process:'',task:''};
-            const ok=await postAttendance(entry); if(ok)saved++;
-          }
-          safeSaveObj('dtr_status2',statusCache); safeSaveObj('dtr_teamcache',teamStatusCache);
-          toast('✅ '+status+' applied to '+saved+' weekday(s)','ok');
-          renderMarkAttendance();
-        })();
-        break;
-      }
-      case 'week-picker-cancel': { const p=document.getElementById('att-week-picker'); if(p)p.remove(); break; }
+
+      case 'week-picker-cancel': { const p=q('#att-week-picker'); if(p)p.remove(); break; }
       case 'toggle-note': {
         const n = btn.dataset.n;
         const box = document.getElementById('opt-note-' + n);
@@ -673,7 +679,8 @@
       case 'npt-type':      nptSelectType(v); break;
       case 'npt-log':       nptLogEntry(); break;
       case 'npt-del':       nptDel(+btn.dataset.idx); break;
-      case 'test-sp':       testSP(); break;
+      case 'test-sp':        testSP(); break;
+      case 'sync-my-data':   toast('Syncing your data from SP...','info'); fetchOwnAttendance(false); setTimeout(()=>fetchOwnTasks(false),1500); setTimeout(()=>fetchOwnNPT(false),3000); break;
       case 'flush-queue':   flushQueueManual(); break;
     }
   }
@@ -692,6 +699,7 @@
 
   function handleKeydown(e) {
     if (e.key === 'Enter' && e.target.id === 'login-name') doLogin();
+    if (e.key === 'Enter' && e.target.tagName === 'SELECT') doLogin();
   }
 
   // SUBMIT TAB
@@ -704,7 +712,7 @@
       '<div class="ph-sub">' + formatDay(selectedDate) + '</div></div>' +
       '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="clear-submit">Clear All</button></div></div>' +
       '<div class="card"><div class="card-title">Employee Info</div><div class="g2">' +
-      '<div class="dtr-field"><label class="dtr-label">Full Name</label><input class="dtr-input" value="' + authState.name + '" readonly style="opacity:.7"></div>' +
+      '<div class="dtr-field"><label class="dtr-label">Full Name</label><input class="dtr-input" value="' + authState.name + '" readonly style="cursor:default"></div>' +
       '<div class="dtr-field"><label class="dtr-label">Date <span style="font-size:.73rem;color:var(--text3)">(Today or Yesterday only)</span></label>' +
       '<div class="date-pill-row">' +
       '<button class="date-pill' + (selectedDate===todayStr()?' active':'') + '" data-action="pick-date" data-val="' + todayStr() + '">Today — ' + formatDate(todayStr()) + '</button>' +
@@ -892,12 +900,12 @@
       '</div></div>' +
       // Filter bar
       '<div class="filter-bar" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
-      '<input type="text" id="tk-filter" class="dtr-input" placeholder="Filter by task, date, type..." style="max-width:240px" oninput="renderTrackerFiltered()">' +
-      '<select id="tk-type-filter" class="dtr-select" style="max-width:160px" onchange="renderTrackerFiltered()">' +
+      '<input type="text" id="tk-filter" class="dtr-input" placeholder="Filter by task, date, type..." style="max-width:240px">' +
+      '<select id="tk-type-filter" class="dtr-select" style="max-width:160px">' +
       '<option value="">All Work Types</option>' +
       '<option value="Productive">Productive</option><option value="NPT">NPT</option>' +
       '</select>' +
-      '<select id="tk-task-filter" class="dtr-select" style="max-width:180px" onchange="renderTrackerFiltered()">' +
+      '<select id="tk-task-filter" class="dtr-select" style="max-width:180px">' +
       '<option value="">All Task Types</option>' +
       TASK_TYPES.map(t => '<option value="' + t + '">' + t + '</option>').join('') +
       '<option value="Leave">Leave</option></select>' +
@@ -1119,33 +1127,6 @@
     renderMarkAttendance();
   }
 
-  async function attApplyToWeek() {
-    // Modal picker
-    const existing = document.getElementById('att-week-picker');
-    if (existing) { existing.remove(); return; }
-    const picker = document.createElement('div');
-    picker.id = 'att-week-picker';
-    picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:99999;background:var(--bg2);border:2px solid var(--accent2);border-radius:16px;padding:24px;min-width:340px;box-shadow:0 24px 64px rgba(0,0,0,.5)';
-    picker.innerHTML =
-      '<div style="font-weight:700;color:var(--text);margin-bottom:4px;font-size:.95rem">Apply to All Weekdays</div>' +
-      '<div style="font-size:.8rem;color:var(--text3);margin-bottom:14px">Mon–Fri of current week</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">' +
-      STATUSES.map(s => {
-        const cfg = STATUS_CFG[s]||{};
-        return '<button data-action="week-pick-apply" data-val="' + s + '" style="padding:10px 6px;border-radius:10px;border:2px solid '+cfg.color+';background:'+cfg.bg+';color:'+cfg.color+';font-weight:700;font-size:.85rem;cursor:pointer;font-family:var(--font)">' + s + '</button>';
-      }).join('') + '</div>' +
-      '<div style="display:flex;justify-content:space-between;align-items:center">' +
-      '<label style="font-size:.78rem;color:var(--text3);display:flex;align-items:center;gap:6px"><input type="checkbox" id="wk-overwrite" style="accent-color:var(--accent2)"> Overwrite marked days</label>' +
-      '<button data-action="week-pick-cancel" style="padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;font-family:var(--font);font-size:.82rem">Cancel</button>' +
-      '</div>';
-    (document.getElementById('dtr-root-outer')||document.body).appendChild(picker);
-    setTimeout(() => {
-      document.addEventListener('click', function dismiss(e) {
-        if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', dismiss); }
-      });
-    }, 100);
-  }
-
 
   function buildAttEditPanel(dk) {
     const existing = statusCache[dk] || {};
@@ -1339,35 +1320,112 @@
   }
 
   async function attApplyToWeek() {
-    // Show a quick status picker overlay
-    const existing = q('#att-week-picker');
+    // Remove if already open
+    const existing = document.getElementById('att-week-picker');
     if (existing) { existing.remove(); return; }
-    const el = q('#view-mark'); if (!el) return;
+
+    // Use current theme CSS vars by reading from root
+    const isDark = !root.classList.contains('lt');
+    const bg2    = isDark ? '#161b22' : '#ffffff';
+    const bg3    = isDark ? '#1c2333' : '#f0f3f6';
+    const text   = isDark ? '#e6edf3' : '#1f2328';
+    const text3  = isDark ? '#484f58' : '#9198a1';
+    const border = isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.15)';
+    const accent2= '#a371f7';
+
+    // Overlay backdrop
+    const overlay = document.createElement('div');
+    overlay.id = 'att-week-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483640;background:rgba(0,0,0,.5)';
+
+    // Picker modal
     const picker = document.createElement('div');
     picker.id = 'att-week-picker';
-    picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:99999;background:var(--bg2);border:2px solid var(--accent2);border-radius:16px;padding:24px;min-width:360px;box-shadow:0 24px 64px rgba(0,0,0,.5);animation:fi .2s ease';
-    picker.innerHTML =
-      '<div style="font-size:.95rem;font-weight:700;color:var(--text);margin-bottom:4px">Apply to All Weekdays</div>' +
-      '<div style="font-size:.8rem;color:var(--text3);margin-bottom:16px">Mon–Fri this week · Only unset days</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">' +
-      STATUSES.map(s => {
-        const cfg = STATUS_CFG[s]||{};
-        return '<button data-action="week-picker-apply" data-val="' + s + '" style="padding:10px 8px;border-radius:10px;border:2px solid ' + cfg.color + ';background:' + cfg.bg + ';color:' + cfg.color + ';font-weight:700;font-size:.85rem;cursor:pointer;font-family:var(--font)">' + s + '</button>';
-      }).join('') +
-      '</div>' +
-      '<div style="display:flex;justify-content:space-between;align-items:center">' +
-      '<label style="font-size:.78rem;color:var(--text3);display:flex;align-items:center;gap:6px"><input type="checkbox" id="wk-overwrite" style="accent-color:var(--accent2)"> Overwrite already-marked days</label>' +
-      '<button data-action="week-picker-cancel" style="padding:5px 12px;border-radius:7px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);cursor:pointer;font-family:var(--font);font-size:.82rem">Cancel</button>' +
-      '</div>';
-    document.getElementById('dtr-root-outer').appendChild(picker);
-    // Close on outside click
-    setTimeout(() => {
-      document.addEventListener('click', function dismiss(e) {
-        if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener('click', dismiss); }
-      });
-    }, 100);
+    picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2147483641;'
+      + 'background:' + bg2 + ';border:2px solid ' + accent2 + ';border-radius:16px;padding:24px;'
+      + 'min-width:340px;box-shadow:0 24px 64px rgba(0,0,0,.6);font-family:DM Sans,sans-serif';
 
-    // week-picker-apply handled in handleClick
+    // Overwrite checkbox — declared FIRST so btn.onclick closures can reference it
+    const overwriteChk = document.createElement('input');
+    overwriteChk.type = 'checkbox';
+    overwriteChk.id   = 'wk-overwrite';
+    overwriteChk.style.cssText = 'accent-color:' + accent2 + ';width:16px;height:16px;cursor:pointer';
+
+    // Build status buttons
+    const statusButtons = STATUSES.map(s => {
+      const cfg = STATUS_CFG[s]||{};
+      const btn = document.createElement('button');
+      btn.textContent = s;
+      btn.style.cssText = 'padding:12px 8px;border-radius:10px;border:2px solid ' + cfg.color
+        + ';background:' + cfg.bg + ';color:' + cfg.color
+        + ';font-weight:700;font-size:.85rem;cursor:pointer;font-family:DM Sans,sans-serif;transition:all .15s';
+      btn.onmouseover = () => { btn.style.transform='translateY(-2px)'; btn.style.boxShadow='0 4px 12px rgba(0,0,0,.3)'; };
+      btn.onmouseout  = () => { btn.style.transform=''; btn.style.boxShadow=''; };
+      btn.onclick = async () => {
+        const overwrite = overwriteChk.checked; // now in scope
+        overlay.remove(); picker.remove();
+        const ws = getWeekStart(attWeekOffset);
+        const weekdays = Array.from({length:5}, (_,i) => {
+          const d = new Date(ws); d.setDate(ws.getDate()+1+i);
+          return d.toISOString().split('T')[0];
+        });
+        toast('Applying ' + s + ' to week...', 'info');
+        let saved = 0;
+        for (const dk of weekdays) {
+          if (!overwrite && statusCache[dk]?.status) continue;
+          const entry = {status:s, process:'', task:'', date:dk, name:authState.name, updatedAt:new Date().toISOString()};
+          statusCache[dk] = {...entry};
+          teamStatusCache[authState.name+'::'+dk] = {status:s, process:'', task:''};
+          const ok = await postAttendance(entry); if (ok) saved++;
+        }
+        safeSaveObj('dtr_status2', statusCache);
+        safeSaveObj('dtr_teamcache', teamStatusCache);
+        toast('✅ ' + s + ' applied to ' + saved + ' weekday(s)', 'ok');
+        renderMarkAttendance();
+        if (currentView === 'calendar') renderMyCalendar();
+      };
+      return btn;
+    });
+
+    const label = document.createElement('label');
+    label.style.cssText = 'font-size:.78rem;color:' + text3 + ';display:flex;align-items:center;gap:6px;cursor:pointer';
+    label.appendChild(overwriteChk);
+    label.appendChild(document.createTextNode(' Overwrite already-marked days'));
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'padding:5px 12px;border-radius:7px;border:1px solid ' + border
+      + ';background:' + bg3 + ';color:' + text3 + ';cursor:pointer;font-family:DM Sans,sans-serif;font-size:.82rem';
+    cancelBtn.onclick = () => { overlay.remove(); picker.remove(); };
+
+    // Assemble picker
+    const title = document.createElement('div');
+    title.textContent = 'Apply to All Weekdays';
+    title.style.cssText = 'font-size:.95rem;font-weight:700;color:' + text + ';margin-bottom:4px';
+
+    const sub = document.createElement('div');
+    sub.textContent = 'Mon–Fri this week · Choose a status:';
+    sub.style.cssText = 'font-size:.8rem;color:' + text3 + ';margin-bottom:14px';
+
+    const btnGrid = document.createElement('div');
+    btnGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px';
+    statusButtons.forEach(b => btnGrid.appendChild(b));
+
+    const footer = document.createElement('div');
+    footer.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
+    footer.appendChild(label);
+    footer.appendChild(cancelBtn);
+
+    picker.appendChild(title);
+    picker.appendChild(sub);
+    picker.appendChild(btnGrid);
+    picker.appendChild(footer);
+
+    // Close on overlay click
+    overlay.onclick = () => { overlay.remove(); picker.remove(); };
+
+    document.body.appendChild(overlay);
+    document.body.appendChild(picker);
   }
 
   // ── MY CALENDAR ────────────────────────────────────────────────────────
@@ -1393,7 +1451,7 @@
       '<div class="g3"><div class="dtr-field"><label class="dtr-label">Date</label><input type="date" class="dtr-input" id="npt-date" value="' + todayStr() + '"></div>' +
       '<div class="dtr-field"><label class="dtr-label">Duration (minutes)</label><input type="number" class="dtr-input" id="npt-mins" min="1" max="480" placeholder="e.g. 30"></div>' +
       '<div class="dtr-field" style="justify-content:flex-end"><button class="btn btn-primary" data-action="npt-log" style="align-self:flex-end">' + ic.add + ' Log Entry</button></div></div>' +
-      '<div class="dtr-field"><label class="dtr-label">Description</label><input type="text" class="dtr-input" id="npt-desc" placeholder="Brief description..."></div></div>' +
+      '<div class="dtr-field"><label class="dtr-label">Description</label><textarea class="dtr-input" id="npt-desc" placeholder="Brief description of the NPT reason..." rows="2" style="resize:none;min-height:52px"></textarea></div></div>' +
       '<div class="card"><div class="card-title">My NPT Log</div>' +
       (myNPT.length ?
         '<div class="npt-table-wrap"><table class="npt-table"><thead><tr><th>Date</th><th>Type</th><th>Duration</th><th>Description</th><th></th></tr></thead><tbody>' +
@@ -1406,7 +1464,7 @@
   function nptSelectType(type) { nptActiveType = type; qa('.npt-type-btn').forEach(b => b.classList.toggle('active', b.dataset.val === type)); }
 
   async function nptLogEntry() {
-    const date=q('#npt-date')?.value||todayStr(), mins=parseInt(q('#npt-mins')?.value||'0'), desc=q('#npt-desc')?.value?.trim()||'', type=nptActiveType;
+    const date=q('#npt-date')?.value||todayStr(), mins=parseInt(q('#npt-mins')?.value||'0'), desc=(q('#npt-desc')?.value||'').trim(), type=nptActiveType;
     if (!type) { toast('Select an NPT type','err'); return; }
     if (!mins||mins<1) { toast('Enter duration in minutes','err'); return; }
     const entry = { name:authState.name, date, type, minutes:mins, desc, loggedAt:new Date().toISOString() };
@@ -1425,9 +1483,12 @@
     el.innerHTML =
       '<div class="ph"><div class="ph-left"><div class="ph-title">Settings</div></div></div>' +
       '<div class="card"><div class="card-title">' + ic.sync + ' SharePoint — Single Site</div>' +
-      '<div class="info-banner" style="margin-bottom:12px">All data goes to: <strong>' + SP.SITE + '</strong></div>' +
+      '<div class="info-banner" style="margin-bottom:12px">' +
+'<div><strong>Your data is private.</strong> You only see your own submissions, attendance and NPT. ' +
+'Admins can see the full team. All data is stored in: <code>' + SP.SITE + '</code></div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' +
       '<button class="btn btn-ghost btn-sm" data-action="test-sp">Test Connection</button>' +
+'<button class="btn btn-ghost btn-sm" data-action="sync-my-data">' + ic.sync + ' Sync My Data</button>' +
       (qLen>0?'<button class="btn btn-ghost btn-sm" data-action="flush-queue">🔄 Retry '+qLen+' Queued</button>':'') + '</div>' +
       '<p style="font-size:.8rem;color:var(--text3)">' + (qLen===0?'✅ All synced':qLen+' pending sync') + '</p>' +
       '<div style="margin-top:14px"><div style="font-size:.78rem;color:var(--text3)"><strong>SharePoint Lists Required:</strong></div>' +
@@ -1581,15 +1642,36 @@
     });
   }
 
+  // Cache the NPT list entity type so we only fetch it once
+  let _nptListType = '';
+
+  async function getNPTListType() {
+    if (_nptListType) return _nptListType;
+    return new Promise(resolve => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: SP.SITE + "/_api/web/lists/GetByTitle('" + SP.NPT_LIST + "')?$select=ListItemEntityTypeFullName",
+        headers: {'Accept': 'application/json;odata=verbose'},
+        withCredentials: true,
+        onload: res => {
+          try {
+            _nptListType = JSON.parse(res.responseText).d.ListItemEntityTypeFullName;
+            resolve(_nptListType);
+          } catch { resolve('SP.Data.NPTLogListItem'); } // fallback
+        },
+        onerror: () => resolve('SP.Data.NPTLogListItem')
+      });
+    });
+  }
+
   async function postNPT(e) {
     const token = await getDigest();
     if (!token) return false;
-    const dateStr = e.date || todayStr();
-    const title   = (e.type || 'NPT') + ' - ' + dateStr;
-    // Build body WITHOUT __metadata — avoids type name mismatch issues entirely
-    // SP REST API v1 accepts this format fine
+    const listType = await getNPTListType();
+    const dateStr  = e.date || todayStr();
     const body = {
-      'Title':        title,
+      '__metadata': { 'type': listType },
+      'Title':        (e.type || 'NPT') + ' - ' + dateStr,
       'EmployeeName': e.name || '',
       'NPTDate':      dateStr + 'T00:00:00Z',
       'NPTType':      e.type || '',
@@ -1597,37 +1679,30 @@
       'Description':  e.desc || '',
       'LoggedAt':     e.loggedAt || new Date().toISOString()
     };
-    console.log('[WorkPulse] Posting NPT:', JSON.stringify(body));
     return new Promise(resolve => {
       GM_xmlhttpRequest({
         method: 'POST',
         url: SP.SITE + "/_api/web/lists/GetByTitle('" + SP.NPT_LIST + "')/items",
         headers: {
-          'Accept':           'application/json;odata=verbose',
-          'Content-Type':     'application/json;odata=verbose',
-          'X-RequestDigest':  token
+          'Accept':          'application/json;odata=verbose',
+          'Content-Type':    'application/json;odata=verbose',
+          'X-RequestDigest': token
         },
         data: JSON.stringify(body),
         withCredentials: true,
         onload: res => {
-          console.log('[WorkPulse] NPT response:', res.status, res.responseText.slice(0, 300));
           if (res.status >= 200 && res.status < 300) {
             resolve(true);
           } else {
-            // Try again with __metadata using the actual list type name from SP
-            let metaType = '';
-            try {
-              // Extract real type from error or fetch it
-              metaType = JSON.parse(res.responseText).error.message.value || '';
-            } catch {}
-            toast('❌ NPT SP error ' + res.status + ' — open F12 console for details', 'err');
-            console.error('[WorkPulse] NPT full error:', res.responseText);
+            let msg = '';
+            try { msg = JSON.parse(res.responseText).error.message.value || ''; } catch {}
+            toast('❌ NPT failed (' + res.status + ')' + (msg ? ': ' + msg.slice(0,80) : '') + ' — check F12 console', 'err');
+            console.error('[WorkPulse] NPT error:', res.status, res.responseText);
             resolve(false);
           }
         },
         onerror: err => {
-          console.error('[WorkPulse] NPT network error:', err);
-          toast('❌ NPT network error', 'err');
+          toast('❌ NPT network error — is SP open in another tab?', 'err');
           resolve(false);
         }
       });
@@ -1774,16 +1849,101 @@
   }
 
   function fetchAllAttendance() {
-    // Fetch all team attendance (for team cache) + own attendance (for calendar)
+    // Associates only fetch their OWN data — full team fetch is admin-only
     fetchOwnAttendance(false);
-    GM_xmlhttpRequest({method:'GET',url:SP.SITE+"/_api/web/lists/GetByTitle('"+SP.STATUS_LIST+"')/items?$top=5000&$orderby=StatusDate%20desc&$select=EmployeeName,StatusDate,WorkStatus,Process,TaskNotes",headers:{'Accept':'application/json;odata=verbose'},withCredentials:true,
-    onload:res=>{try{
-      const items=JSON.parse(res.responseText).d.results||[];
-      teamStatusCache={};
-      items.forEach(it=>{const name=it.EmployeeName||'';const rawDate=it.StatusDate||'';const dk=rawDate.includes('T')?rawDate.split('T')[0]:rawDate;if(name&&dk)teamStatusCache[name+'::'+dk]={status:it.WorkStatus||'',process:it.Process||'',task:it.TaskNotes||''};});
-      Object.entries(statusCache).forEach(([dk,v])=>{teamStatusCache[authState.name+'::'+dk]={status:v.status,process:v.process||'',task:v.task||''};});
-      safeSaveObj('dtr_teamcache',teamStatusCache);
-    }catch{}},onerror:()=>{}});
+  }
+
+  function fetchOwnTasks(silent) {
+    // Fetch only THIS associate's tasks from SP (filtered by name)
+    if (!authState.name) return;
+    const nameEsc = authState.name.replace(/'/g, "''");
+    const url = SP.SITE + "/_api/web/lists/GetByTitle('" + SP.TASK_LIST + "')/items" +
+      "?$filter=EmployeeName eq '" + nameEsc + "'" +
+      "&$top=500&$orderby=TaskDate desc" +
+      "&$select=EmployeeName,TaskType,HoursWorked,NPTHours,WorkType,AdHocDetails,TaskDate,SubmittedAt";
+    GM_xmlhttpRequest({
+      method: 'GET', url: url,
+      headers: {'Accept': 'application/json;odata=verbose'},
+      withCredentials: true,
+      onload: res => {
+        try {
+          const items = JSON.parse(res.responseText).d.results || [];
+          // Merge SP items into local submissions (avoid duplicates by submittedAt)
+          const existingKeys = new Set(submissions.map(s => (s.employeeName||'') + '::' + (s.submittedAt||'')));
+          let added = 0;
+          items.forEach(it => {
+            const key = (it.EmployeeName||'') + '::' + (it.SubmittedAt||it.Created||'');
+            if (!existingKeys.has(key)) {
+              submissions.push({
+                employeeName: it.EmployeeName||'',
+                taskType:     it.TaskType||'',
+                hours:        it.HoursWorked||0,
+                npt:          it.NPTHours||0,
+                workType:     it.WorkType||'Productive',
+                adhoc:        it.AdHocDetails||'',
+                date:         (it.TaskDate||'').split('T')[0],
+                submittedAt:  it.SubmittedAt||it.Created||''
+              });
+              added++;
+            }
+          });
+          if (added > 0) {
+            safeSave('dtr_subs4', submissions);
+            updateSBStats();
+            if (currentView === 'analytics') renderAnalytics();
+            if (currentView === 'tracker')   renderTracker();
+          }
+          if (!silent) toast('✅ ' + items.length + ' task(s) synced from SharePoint', 'ok');
+        } catch(ex) {
+          if (!silent) toast('❌ Task sync error: ' + ex.message, 'err');
+        }
+      },
+      onerror: () => { if (!silent) toast('❌ Cannot reach SharePoint', 'err'); }
+    });
+  }
+
+  function fetchOwnNPT(silent) {
+    // Fetch only THIS associate's NPT entries from SP
+    if (!authState.name) return;
+    const nameEsc = authState.name.replace(/'/g, "''");
+    const url = SP.SITE + "/_api/web/lists/GetByTitle('" + SP.NPT_LIST + "')/items" +
+      "?$filter=EmployeeName eq '" + nameEsc + "'" +
+      "&$top=500&$orderby=NPTDate desc" +
+      "&$select=EmployeeName,NPTDate,NPTType,DurationMins,Description,LoggedAt";
+    GM_xmlhttpRequest({
+      method: 'GET', url: url,
+      headers: {'Accept': 'application/json;odata=verbose'},
+      withCredentials: true,
+      onload: res => {
+        try {
+          const items = JSON.parse(res.responseText).d.results || [];
+          const existingKeys = new Set(nptCache.map(n => (n.name||'') + '::' + (n.loggedAt||'')));
+          let added = 0;
+          items.forEach(it => {
+            const key = (it.EmployeeName||'') + '::' + (it.LoggedAt||it.Created||'');
+            if (!existingKeys.has(key)) {
+              nptCache.push({
+                name:     it.EmployeeName||'',
+                date:     (it.NPTDate||'').split('T')[0],
+                type:     it.NPTType||'',
+                minutes:  it.DurationMins||0,
+                desc:     it.Description||'',
+                loggedAt: it.LoggedAt||it.Created||''
+              });
+              added++;
+            }
+          });
+          if (added > 0) {
+            safeSave('dtr_npt2', nptCache);
+            if (currentView === 'missednpt') renderMissedNPT();
+          }
+          if (!silent) toast('✅ NPT log synced from SharePoint', 'ok');
+        } catch(ex) {
+          if (!silent) toast('❌ NPT sync error: ' + ex.message, 'err');
+        }
+      },
+      onerror: () => { if (!silent) toast('❌ Cannot reach SharePoint', 'err'); }
+    });
   }
   // flushQueue defined above
   // flushQueueManual defined above

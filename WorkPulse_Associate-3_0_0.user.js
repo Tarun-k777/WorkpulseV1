@@ -641,9 +641,7 @@
       case 'att-multi-pick':   attMultiPick(v); break;
       case 'att-bulk-apply':   attBulkApply(v); break;
       case 'att-clear-select': attMultiSelect.clear(); renderMarkAttendance(); break;
-      case 'att-apply-week':   attApplyToWeek(); break;
 
-      case 'week-picker-cancel': { const p=q('#att-week-picker'); if(p)p.remove(); break; }
       case 'toggle-note': {
         const n = btn.dataset.n;
         const box = document.getElementById('opt-note-' + n);
@@ -1045,7 +1043,7 @@
 
     el.innerHTML =
       '<div class="ph"><div class="ph-left"><div class="ph-title">Mark Attendance</div>' +
-      '<div class="ph-sub">Click a day · Multi-select for bulk apply · Apply to Week for whole week</div></div></div>' +
+      '<div class="ph-sub">Click a day to mark · Use Multi-select to apply one status to many days</div></div></div>' +
 
       // Week navigator + controls
       '<div class="wv-controls" style="margin-bottom:14px">' +
@@ -1054,7 +1052,7 @@
       '<div class="wv-range-sub">' + (attWeekOffset===0?'Current Week':attWeekOffset<0?Math.abs(attWeekOffset)+' week(s) ago':attWeekOffset+' ahead') + '</div></div>' +
       (attWeekOffset!==0?'<button class="wv-today-btn" data-action="att-week-today">This Week</button>':'') +
       '<button class="att-select-toggle' + (attBulkMode?' on':'') + '" data-action="att-toggle-bulk">' + (attBulkMode?'✕ Cancel':'☑ Multi-select') + '</button>' +
-      (!attBulkMode?'<button class="att-select-toggle" data-action="att-apply-week">⚡ Apply to Week</button>':'') +
+      '' +
       '<button class="wv-nav-btn" data-action="att-week-next">' + ic.right + '</button></div>' +
 
       // Bulk action bar (when days selected)
@@ -1133,7 +1131,8 @@
     const selStatus = attSelectedStatus;
     const today = todayStr();
     const isFuture = dk > today;
-    const dateLabel = dk===today?'Today':dk===yesterdayStr()?'Yesterday':formatDay(dk);
+    const isToday = dk===today, isYest = dk===yesterdayStr();
+    const dateLabel = isToday?'Today ('+formatDate(dk)+')':isYest?'Yesterday ('+formatDate(dk)+')':formatDate(dk);
     return '<div class="att-edit-card">' +
       '<div class="att-edit-header">' +
       '<div><div class="att-edit-date">' + dateLabel + '</div>' +
@@ -1151,7 +1150,7 @@
           '<div class="status-tile-sub">' + cfg.label + '</div></div>';
       }).join('') + '</div>' +
       '<button class="att-save-btn" id="att-save-btn" data-action="att-save"' + (!selStatus ? ' disabled' : '') + '>' +
-      ic.check + ' Save — ' + dateLabel + '</button>' +
+      ic.check + ' Save Attendance — ' + (dk===today?'Today':dk===yesterdayStr()?'Yesterday':formatDate(dk)) + '</button>' +
       '</div>';
   }
 
@@ -1319,114 +1318,7 @@
     }
   }
 
-  async function attApplyToWeek() {
-    // Remove if already open
-    const existing = document.getElementById('att-week-picker');
-    if (existing) { existing.remove(); return; }
 
-    // Use current theme CSS vars by reading from root
-    const isDark = !root.classList.contains('lt');
-    const bg2    = isDark ? '#161b22' : '#ffffff';
-    const bg3    = isDark ? '#1c2333' : '#f0f3f6';
-    const text   = isDark ? '#e6edf3' : '#1f2328';
-    const text3  = isDark ? '#484f58' : '#9198a1';
-    const border = isDark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.15)';
-    const accent2= '#a371f7';
-
-    // Overlay backdrop
-    const overlay = document.createElement('div');
-    overlay.id = 'att-week-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483640;background:rgba(0,0,0,.5)';
-
-    // Picker modal
-    const picker = document.createElement('div');
-    picker.id = 'att-week-picker';
-    picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2147483641;'
-      + 'background:' + bg2 + ';border:2px solid ' + accent2 + ';border-radius:16px;padding:24px;'
-      + 'min-width:340px;box-shadow:0 24px 64px rgba(0,0,0,.6);font-family:DM Sans,sans-serif';
-
-    // Overwrite checkbox — declared FIRST so btn.onclick closures can reference it
-    const overwriteChk = document.createElement('input');
-    overwriteChk.type = 'checkbox';
-    overwriteChk.id   = 'wk-overwrite';
-    overwriteChk.style.cssText = 'accent-color:' + accent2 + ';width:16px;height:16px;cursor:pointer';
-
-    // Build status buttons
-    const statusButtons = STATUSES.map(s => {
-      const cfg = STATUS_CFG[s]||{};
-      const btn = document.createElement('button');
-      btn.textContent = s;
-      btn.style.cssText = 'padding:12px 8px;border-radius:10px;border:2px solid ' + cfg.color
-        + ';background:' + cfg.bg + ';color:' + cfg.color
-        + ';font-weight:700;font-size:.85rem;cursor:pointer;font-family:DM Sans,sans-serif;transition:all .15s';
-      btn.onmouseover = () => { btn.style.transform='translateY(-2px)'; btn.style.boxShadow='0 4px 12px rgba(0,0,0,.3)'; };
-      btn.onmouseout  = () => { btn.style.transform=''; btn.style.boxShadow=''; };
-      btn.onclick = async () => {
-        const overwrite = overwriteChk.checked; // now in scope
-        overlay.remove(); picker.remove();
-        const ws = getWeekStart(attWeekOffset);
-        const weekdays = Array.from({length:5}, (_,i) => {
-          const d = new Date(ws); d.setDate(ws.getDate()+1+i);
-          return d.toISOString().split('T')[0];
-        });
-        toast('Applying ' + s + ' to week...', 'info');
-        let saved = 0;
-        for (const dk of weekdays) {
-          if (!overwrite && statusCache[dk]?.status) continue;
-          const entry = {status:s, process:'', task:'', date:dk, name:authState.name, updatedAt:new Date().toISOString()};
-          statusCache[dk] = {...entry};
-          teamStatusCache[authState.name+'::'+dk] = {status:s, process:'', task:''};
-          const ok = await postAttendance(entry); if (ok) saved++;
-        }
-        safeSaveObj('dtr_status2', statusCache);
-        safeSaveObj('dtr_teamcache', teamStatusCache);
-        toast('✅ ' + s + ' applied to ' + saved + ' weekday(s)', 'ok');
-        renderMarkAttendance();
-        if (currentView === 'calendar') renderMyCalendar();
-      };
-      return btn;
-    });
-
-    const label = document.createElement('label');
-    label.style.cssText = 'font-size:.78rem;color:' + text3 + ';display:flex;align-items:center;gap:6px;cursor:pointer';
-    label.appendChild(overwriteChk);
-    label.appendChild(document.createTextNode(' Overwrite already-marked days'));
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.style.cssText = 'padding:5px 12px;border-radius:7px;border:1px solid ' + border
-      + ';background:' + bg3 + ';color:' + text3 + ';cursor:pointer;font-family:DM Sans,sans-serif;font-size:.82rem';
-    cancelBtn.onclick = () => { overlay.remove(); picker.remove(); };
-
-    // Assemble picker
-    const title = document.createElement('div');
-    title.textContent = 'Apply to All Weekdays';
-    title.style.cssText = 'font-size:.95rem;font-weight:700;color:' + text + ';margin-bottom:4px';
-
-    const sub = document.createElement('div');
-    sub.textContent = 'Mon–Fri this week · Choose a status:';
-    sub.style.cssText = 'font-size:.8rem;color:' + text3 + ';margin-bottom:14px';
-
-    const btnGrid = document.createElement('div');
-    btnGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px';
-    statusButtons.forEach(b => btnGrid.appendChild(b));
-
-    const footer = document.createElement('div');
-    footer.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
-    footer.appendChild(label);
-    footer.appendChild(cancelBtn);
-
-    picker.appendChild(title);
-    picker.appendChild(sub);
-    picker.appendChild(btnGrid);
-    picker.appendChild(footer);
-
-    // Close on overlay click
-    overlay.onclick = () => { overlay.remove(); picker.remove(); };
-
-    document.body.appendChild(overlay);
-    document.body.appendChild(picker);
-  }
 
   // ── MY CALENDAR ────────────────────────────────────────────────────────
   // MISSED NPT
@@ -1960,8 +1852,14 @@
   function getLast7(){ return Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-6+i);return d.toISOString().split('T')[0];}); }
   function getWeekStart(offset){ const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-d.getDay()+(offset*7));return d; }
   function getWeekLabel(offset){ const ws=getWeekStart(offset),we=new Date(ws);we.setDate(ws.getDate()+6);const f=d=>d.toLocaleDateString('en-US',{month:'short',day:'numeric'});return f(ws)+' – '+f(we)+', '+we.getFullYear(); }
-  function todayStr()     { return new Date().toISOString().split('T')[0]; }
-  function yesterdayStr() { const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().split('T')[0]; }
+  function todayStr() {
+    const d = new Date();
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  function yesterdayStr() {
+    const d = new Date(); d.setDate(d.getDate()-1);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
   function isAllowedDate(s){ return s===todayStr()||s===yesterdayStr(); }
   function formatDate(d)  { return new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
   function formatDay(d)   { return new Date(d+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'}); }

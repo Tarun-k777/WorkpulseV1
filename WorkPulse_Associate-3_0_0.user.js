@@ -622,7 +622,7 @@
         // Set attDate to Monday of new week
         const ws2 = getWeekStart(attWeekOffset);
         ws2.setDate(ws2.getDate()+1); // Monday
-        attDate = ws2.toISOString().split('T')[0];
+        attDate = ws2.getFullYear()+'-'+String(ws2.getMonth()+1).padStart(2,'0')+'-'+String(ws2.getDate()).padStart(2,'0');
         attSelectedStatus = (statusCache[attDate]||{}).status||'';
         renderMarkAttendance();
         break;
@@ -631,7 +631,7 @@
         attWeekOffset++;
         const ws3 = getWeekStart(attWeekOffset);
         ws3.setDate(ws3.getDate()+1); // Monday
-        attDate = ws3.toISOString().split('T')[0];
+        attDate = ws3.getFullYear()+'-'+String(ws3.getMonth()+1).padStart(2,'0')+'-'+String(ws3.getDate()).padStart(2,'0');
         attSelectedStatus = (statusCache[attDate]||{}).status||'';
         renderMarkAttendance();
         break;
@@ -1036,7 +1036,7 @@
     const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
     const dates = Array.from({length:7}, (_,i) => {
       const d = new Date(ws); d.setDate(ws.getDate()+i);
-      const dk = d.toISOString().split('T')[0];
+      const dk = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
       return {dk, day:days[i], label:d.toLocaleDateString('en-US',{month:'short',day:'numeric'}),
               isToday:dk===today, isWeekend:i===0||i===6};
     });
@@ -1129,10 +1129,17 @@
   function buildAttEditPanel(dk) {
     const existing = statusCache[dk] || {};
     const selStatus = attSelectedStatus;
-    const today = todayStr();
+    // Use local date parts to avoid UTC offset issues
+    const now   = new Date();
+    const today = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+    const yest  = new Date(now); yest.setDate(now.getDate()-1);
+    const yesterdayLocal = yest.getFullYear()+'-'+String(yest.getMonth()+1).padStart(2,'0')+'-'+String(yest.getDate()).padStart(2,'0');
     const isFuture = dk > today;
-    const isToday = dk===today, isYest = dk===yesterdayStr();
-    const dateLabel = isToday?'Today ('+formatDate(dk)+')':isYest?'Yesterday ('+formatDate(dk)+')':formatDate(dk);
+    const isToday  = dk === today;
+    const isYest   = dk === yesterdayLocal;
+    // Always show the full date — no ambiguity
+    const tag = isToday ? ' (Today)' : isYest ? ' (Yesterday)' : '';
+    const dateLabel = formatDate(dk) + tag;
     return '<div class="att-edit-card">' +
       '<div class="att-edit-header">' +
       '<div><div class="att-edit-date">' + dateLabel + '</div>' +
@@ -1150,7 +1157,7 @@
           '<div class="status-tile-sub">' + cfg.label + '</div></div>';
       }).join('') + '</div>' +
       '<button class="att-save-btn" id="att-save-btn" data-action="att-save"' + (!selStatus ? ' disabled' : '') + '>' +
-      ic.check + ' Save Attendance — ' + (dk===today?'Today':dk===yesterdayStr()?'Yesterday':formatDate(dk)) + '</button>' +
+      ic.check + ' Save — ' + dateLabel + '</button>' +
       '</div>';
   }
 
@@ -1215,7 +1222,7 @@
   function attNavDate(delta) {
     const d = new Date(attDate + 'T12:00:00');
     d.setDate(d.getDate() + delta);
-    attDate = d.toISOString().split('T')[0];
+    attDate = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     attSelectedStatus = (statusCache[attDate] || {}).status || '';
     const todayD = new Date(todayStr() + 'T12:00:00');
     const selD   = new Date(attDate + 'T12:00:00');
@@ -1850,7 +1857,14 @@
   function calcAvgProd(subs){ if(!Array.isArray(subs))return 0;const v=subs.filter(s=>s&&!s.taskType?.startsWith('Leave'));if(!v.length)return 0;return Math.min(100,v.reduce((a,s)=>a+((s.hours||0)/WH*100),0)/v.length); }
   function calcStreak(subs){ const days=[...new Set(subs.filter(s=>s&&!s.taskType?.startsWith('Leave')).map(s=>s.date))].sort().reverse();let streak=0,prev=new Date();for(const d of days){const dt=new Date(d+'T12:00:00'),diff=Math.round((prev-dt)/86400000);if(streak===0&&diff<=1){streak=1;prev=dt;}else if(diff===1){streak++;prev=dt;}else break;}return streak; }
   function getLast7(){ return Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-6+i);return d.toISOString().split('T')[0];}); }
-  function getWeekStart(offset){ const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-d.getDay()+(offset*7));return d; }
+  function getWeekStart(offset) {
+    const d = new Date();
+    // Use local midnight to avoid UTC day boundary issues
+    d.setHours(12,0,0,0); // noon = safe from DST and UTC shifts
+    d.setDate(d.getDate() - d.getDay() + (offset * 7));
+    d.setHours(0,0,0,0);
+    return d;
+  }
   function getWeekLabel(offset){ const ws=getWeekStart(offset),we=new Date(ws);we.setDate(ws.getDate()+6);const f=d=>d.toLocaleDateString('en-US',{month:'short',day:'numeric'});return f(ws)+' – '+f(we)+', '+we.getFullYear(); }
   function todayStr() {
     const d = new Date();

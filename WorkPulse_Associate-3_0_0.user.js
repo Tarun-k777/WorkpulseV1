@@ -4,11 +4,6 @@
 // @version      4.0.0
 // @description  WorkPulse — SSO, role-based access (Associate/Admin/SuperAdmin), SP direct sync
 // @author       WorkPulse Team
-// @match        https://share.amazon.com/*
-// @match        https://*.share.amazon.com/*
-// @match        https://amazon.sharepoint.com/*
-// @match        https://*.sharepoint.com/*
-// @match        https://www.grainger.com/*
 // @match        https://share.amazon.com/Pages/default.aspx
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -904,7 +899,7 @@
         ws2.setDate(ws2.getDate()+1); // Monday
         attDate = ws2.getFullYear()+'-'+String(ws2.getMonth()+1).padStart(2,'0')+'-'+String(ws2.getDate()).padStart(2,'0');
         attSelectedStatus = (statusCache[attDate]||{}).status||'';
-        renderMarkAttendance();
+        renderWeeklyCalendar();
         break;
       }
       case 'att-week-next': {
@@ -913,14 +908,18 @@
         ws3.setDate(ws3.getDate()+1); // Monday
         attDate = ws3.getFullYear()+'-'+String(ws3.getMonth()+1).padStart(2,'0')+'-'+String(ws3.getDate()).padStart(2,'0');
         attSelectedStatus = (statusCache[attDate]||{}).status||'';
-        renderMarkAttendance();
+        renderWeeklyCalendar();
         break;
       }
-      case 'att-week-today':   attWeekOffset=0; attDate=todayStr(); attSelectedStatus=(statusCache[attDate]||{}).status||''; renderMarkAttendance(); break;
+      case 'att-week-today':   attWeekOffset=0; attDate=todayStr(); attSelectedStatus=(statusCache[attDate]||{}).status||''; renderWeeklyCalendar(); break;
       case 'att-toggle-bulk':  attToggleBulk(); break;
       case 'att-multi-pick':   attMultiPick(v); break;
       case 'att-bulk-apply':   attBulkApply(v); break;
-      case 'att-clear-select': attMultiSelect.clear(); renderMarkAttendance(); break;
+      case 'att-clear-select':
+        attMultiSelect.clear();
+        qa('.att-day-card').forEach(c => { c.classList.remove('att-multi'); const chk=c.querySelector('.att-multi-chk'); if(chk) chk.remove(); });
+        _updateBulkBar();
+        break;
 
       case 'toggle-note': {
         const n = btn.dataset.n;
@@ -1425,15 +1424,7 @@
       '' +
       '<button class="wv-nav-btn" data-action="att-week-next">' + ic.right + '</button></div>' +
 
-      // Bulk action bar (when days selected)
-      (attBulkMode && attMultiSelect.size > 0 ?
-        '<div class="att-bulk-bar">' +
-        '<span style="font-size:.82rem;font-weight:700;color:var(--accent2)">' + attMultiSelect.size + ' day(s) selected — Apply:</span>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;flex:1">' +
-        STATUSES.map(s => '<button class="att-bulk-btn" data-action="att-bulk-apply" data-val="' + s + '">' + s + '</button>').join('') +
-        '</div>' +
-        '<button class="btn btn-ghost btn-xs" data-action="att-clear-sel">Clear</button>' +
-        '</div>' : '') +
+      // Bulk bar rendered at bottom with stable ID
 
       // Week day cards
       '<div class="att-week-row">' +
@@ -1461,38 +1452,145 @@
           '</div>';
       }).join('') + '</div>' +
 
-      // Edit panel (single mode) or hint (bulk mode)
-      (!attBulkMode
-        ? '<div id="att-edit-panel" style="margin-top:8px">' + buildAttEditPanel(attDate) + '</div>'
-        : (attMultiSelect.size===0 ? '<div class="info-banner" style="margin-top:8px">☑️ Tap days above to select, then choose a status to apply to all at once.</div>' : ''));
+      // Bulk action bar (always rendered, shown/hidden via display)
+      '<div id="att-bulk-bar" class="att-bulk-bar" style="display:' + (attBulkMode && attMultiSelect.size>0?'flex':'none') + '">' +
+      '<span class="bulk-count" style="font-size:.82rem;font-weight:700;color:var(--accent2)">' + attMultiSelect.size + ' day(s) selected — Apply:</span>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;flex:1">' +
+      STATUSES.map(s => '<button class="att-bulk-btn" data-action="att-bulk-apply" data-val="' + s + '">' + s + '</button>').join('') +
+      '</div><button class="btn btn-ghost btn-xs" data-action="att-clear-sel">Clear</button></div>' +
+
+      // Bulk hint (shown in bulk mode with 0 selected)
+      '<div id="att-bulk-hint" class="info-banner" style="margin-top:8px;display:' + (attBulkMode && attMultiSelect.size===0?'block':'none') + '">☑️ Tap days above to select, then choose a status to apply to all at once.</div>' +
+
+      // Edit panel (single mode)
+      '<div id="att-edit-panel" style="margin-top:8px;display:' + (attBulkMode?'none':'block') + '">' + buildAttEditPanel(attDate) + '</div>';
   }
 
   function attToggleBulk() {
     attBulkMode = !attBulkMode;
     attMultiSelect.clear();
-    renderMarkAttendance();
+
+    // DOM-only update — no full re-render
+    const toggleBtn = q('[data-action="att-toggle-bulk"]');
+    if (toggleBtn) {
+      toggleBtn.textContent = attBulkMode ? '✕ Cancel' : '☑ Multi-select';
+      toggleBtn.classList.toggle('on', attBulkMode);
+    }
+
+    // Swap all day card click actions
+    qa('.att-day-card').forEach(card => {
+      card.dataset.action = attBulkMode ? 'att-multi-pick' : 'att-pick-day';
+      card.classList.remove('att-multi');
+      const chk = card.querySelector('.att-multi-chk');
+      if (chk) chk.remove();
+    });
+
+    // Show/hide edit panel vs bulk hint
+    const editPanel = q('#att-edit-panel');
+    const bulkHint  = q('#att-bulk-hint');
+    const bulkBar   = q('#att-bulk-bar');
+    if (editPanel) editPanel.style.display = attBulkMode ? 'none' : 'block';
+    if (bulkHint)  bulkHint.style.display  = attBulkMode ? 'block' : 'none';
+    if (bulkBar)   bulkBar.style.display   = 'none';
   }
 
   function attMultiPick(dk) {
-    if (attMultiSelect.has(dk)) attMultiSelect.delete(dk);
-    else attMultiSelect.add(dk);
-    renderMarkAttendance();
+    // Toggle selection in Set
+    if (attMultiSelect.has(dk)) {
+      attMultiSelect.delete(dk);
+    } else {
+      attMultiSelect.add(dk);
+    }
+
+    // DOM-only: update only the tapped card
+    const card = q('.att-day-card[data-val="' + dk + '"]');
+    if (card) {
+      const selected = attMultiSelect.has(dk);
+      card.classList.toggle('att-multi', selected);
+      // Add/remove checkmark badge
+      let chk = card.querySelector('.att-multi-chk');
+      if (selected && !chk) {
+        chk = document.createElement('div');
+        chk.className = 'att-multi-chk';
+        chk.style.cssText = 'position:absolute;top:5px;right:5px;width:16px;height:16px;border-radius:50%;background:var(--accent2);display:flex;align-items:center;justify-content:center;font-size:9px;color:#fff;font-weight:800;pointer-events:none';
+        chk.textContent = '✓';
+        card.appendChild(chk);
+      } else if (!selected && chk) {
+        chk.remove();
+      }
+    }
+
+    // DOM-only: update bulk bar count and visibility
+    _updateBulkBar();
+  }
+
+  function _updateBulkBar() {
+    const count   = attMultiSelect.size;
+    const bulkBar = q('#att-bulk-bar');
+    const bulkHint= q('#att-bulk-hint');
+    if (bulkBar) {
+      if (count > 0) {
+        bulkBar.style.display = 'flex';
+        const countEl = bulkBar.querySelector('.bulk-count');
+        if (countEl) countEl.textContent = count + ' day(s) selected — Apply:';
+      } else {
+        bulkBar.style.display = 'none';
+      }
+    }
+    if (bulkHint) bulkHint.style.display = count > 0 ? 'none' : 'block';
   }
 
   async function attBulkApply(status) {
-    if (!status || attMultiSelect.size===0) return;
-    let saved = 0;
-    for (const dk of attMultiSelect) {
-      const entry = {status, process:'', task:'', date:dk, name:authState.name, updatedAt:nowUTC()};
-      statusCache[dk] = {...entry};
-      teamStatusCache[authState.name+'::'+dk] = {status, process:'', task:''};
-      const ok = await postAttendance(entry); if(ok) saved++;
-    }
+    if (!status || attMultiSelect.size === 0) return;
+    const dks = [...attMultiSelect];
+    const cfg = STATUS_CFG[status] || {};
+
+    // 1. Instant DOM update — all cards immediately show new status
+    dks.forEach(dk => {
+      const card = q('.att-day-card[data-val="' + dk + '"]');
+      if (card) {
+        card.classList.remove('att-multi');
+        card.style.borderColor = cfg.color || '';
+        card.style.background  = cfg.bg    || '';
+        const dot = card.querySelector('.att-day-dot');
+        const lbl = card.querySelector('.att-day-status');
+        const chk = card.querySelector('.att-multi-chk');
+        if (dot) dot.style.background = cfg.color || 'var(--border2)';
+        if (lbl) { lbl.textContent = status; lbl.style.color = cfg.color || 'var(--text3)'; }
+        if (chk) chk.remove();
+      }
+      // Update local cache immediately
+      statusCache[dk] = { status, shift: (statusCache[dk]||{}).shift||'', date:dk, name:authState.name, updatedAt:nowUTC() };
+      teamStatusCache[authState.name+'::'+dk] = { status, shift: (statusCache[dk]||{}).shift||'' };
+    });
     safeSaveObj('dtr_status2', statusCache);
     safeSaveObj('dtr_teamcache', teamStatusCache);
-    toast('✅ '+status+' applied to '+saved+'/'+attMultiSelect.size+' days','ok');
-    attMultiSelect.clear(); attBulkMode=false;
-    renderMarkAttendance();
+
+    // Reset bulk mode immediately (instant feel)
+    attMultiSelect.clear();
+    attBulkMode = false;
+    const toggleBtn = q('[data-action="att-toggle-bulk"]');
+    if (toggleBtn) { toggleBtn.textContent = '☑ Multi-select'; toggleBtn.classList.remove('on'); }
+    qa('.att-day-card').forEach(c => { c.dataset.action = 'att-pick-day'; });
+    const bulkBar  = q('#att-bulk-bar');
+    const editPanel= q('#att-edit-panel');
+    const bulkHint = q('#att-bulk-hint');
+    if (bulkBar)   bulkBar.style.display   = 'none';
+    if (bulkHint)  bulkHint.style.display  = 'none';
+    if (editPanel) editPanel.style.display = 'block';
+
+    toast('✅ Saving ' + dks.length + ' days as ' + status + '...', 'ok');
+
+    // 2. Post to SP in parallel (not sequential)
+    const results = await Promise.all(
+      dks.map(dk => postAttendance({ status, shift:(statusCache[dk]||{}).shift||'', date:dk, name:authState.name, updatedAt:nowUTC() }))
+    );
+    const saved = results.filter(Boolean).length;
+    if (saved === dks.length) {
+      toast('✅ ' + status + ' applied to ' + saved + ' day(s) — saved to SharePoint', 'ok');
+    } else {
+      toast('⚠️ ' + saved + '/' + dks.length + ' saved to SP — rest queued locally', 'info');
+    }
   }
 
 
@@ -1609,14 +1707,14 @@
     const todaySun = new Date(todayD); todaySun.setDate(todaySun.getDate() - todaySun.getDay());
     const selSun   = new Date(selD);   selSun.setDate(selSun.getDate() - selSun.getDay());
     attWeekOffset = Math.round((selSun - todaySun) / (7 * 24 * 60 * 60 * 1000));
-    renderMarkAttendance();
+    renderWeeklyCalendar();
   }
 
   function attNavToday() {
     attDate = todayStr();
     attWeekOffset = 0;
     attSelectedStatus = (statusCache[attDate] || {}).status || '';
-    renderMarkAttendance();
+    renderWeeklyCalendar();
   }
 
   // ── MY CALENDAR ────────────────────────────────────────────────────────

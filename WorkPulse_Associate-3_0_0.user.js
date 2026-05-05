@@ -9,6 +9,9 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      share.amazon.com
 // @connect      amazon.sharepoint.com
 // @connect      *.sharepoint.com
@@ -32,7 +35,7 @@
   // ═══════════════════════════════════════════════════════════════════════
   // CONSTANTS
   // ═══════════════════════════════════════════════════════════════════════
-  const WH = 8;
+  const WH     = 480; // total working minutes per day
   const TASK_TYPES = [
     'CT Production','Pre-Prod Production','Simulator Production',
     'CT Audits','Pre-Prod Audits','Simulator Audits','Lack of Work',
@@ -929,8 +932,11 @@
         break;
       }
       case 'att-pick-day': {
+        // Block weekends — cannot mark Sat/Sun
+        const _dow = new Date(v+'T12:00:00').getDay();
+        if (_dow === 0 || _dow === 6) { toast('Saturday & Sunday are mandatory off days', 'err'); break; }
         attDate = v;
-        attSelectedStatus = (statusCache[v]||{}).status||''; // set BEFORE buildAttEditPanel
+        attSelectedStatus = (statusCache[v]||{}).status||'';
         // Highlight selected day card
         qa('.att-day-card').forEach(c => c.classList.toggle('att-day-selected', c.dataset.val === v));
         // Re-render only the edit panel (attSelectedStatus already set correctly above)
@@ -960,6 +966,7 @@
       case 'test-npt':       testNPTConnection(); break;
       case 'sync-my-data':   toast('Syncing your data from SP...','info'); fetchOwnAttendance(false); setTimeout(()=>fetchOwnTasks(false),1500); setTimeout(()=>fetchOwnNPT(false),3000); break;
       case 'flush-queue':   flushQueueManual(); break;
+      case 'adm-tk-clear':  { const n=q('#adm-tk-name'),a=q('#adm-tk-assoc'); if(n)n.value=''; if(a)a.value=''; renderAdminTeamTracker(); break; }
       // Admin actions
       case 'adm-sync-all':   fetchAllAdminData(); break;
       case 'adm-sync-tasks': fetchAdminTasks(); break;
@@ -1003,11 +1010,12 @@
       '<div class="dtr-field"><label class="dtr-label">Date <span style="font-size:.73rem;color:var(--text3)">(Today or Yesterday only)</span></label>' +
       '<div class="date-pill-row">' +
       '<button class="date-pill' + (selectedDate===todayStr()?' active':'') + '" data-action="pick-date" data-val="' + todayStr() + '">Today — ' + formatDate(todayStr()) + '</button>' +
-      '<button class="date-pill' + (selectedDate===yesterdayStr()?' active':'') + '" data-action="pick-date" data-val="' + yesterdayStr() + '">Yesterday — ' + formatDate(yesterdayStr()) + '</button>' +
+      '<button class="date-pill' + (selectedDate===prevWorkingDayStr()?' active':'') + '" data-action="pick-date" data-val="' + prevWorkingDayStr() + '">' + prevWorkingDayLabel() + ' — ' + formatDate(prevWorkingDayStr()) + '</button>' +
       '</div><input type="hidden" id="a-date" value="' + selectedDate + '"></div></div></div>' +
       '<div class="card"><div class="card-title" style="display:flex;justify-content:space-between;align-items:center">' +
       '<span>Tasks</span><div class="mode-toggle"><button class="mode-btn active" data-action="mode-single">Single</button>' +
       '<button class="mode-btn" data-action="mode-multi">Multi-Task</button></div></div>' +
+      '<div id="day-limit-warn" style="display:none;color:var(--red);font-size:.82rem;font-weight:600;padding:6px 10px;background:rgba(248,81,73,.08);border-radius:8px;margin-bottom:8px"></div>' +
       '<div id="a-cards">' + buildTaskCard(1, false) + '</div>' +
       '<button class="add-task-btn" id="a-add-btn" style="display:none" data-action="add-card">+ Add Another Task</button></div>' +
       '<div class="viz-card" id="day-viz"><div class="viz-title"><span>Daily Breakdown</span><span id="dviz-summary" style="font-weight:500;color:var(--text3)">0h / 8h</span></div>' +
@@ -1029,7 +1037,7 @@
       '<div class="ga">' +
       '<div class="dtr-field"><label class="dtr-label">Task Type</label><select class="dtr-select dtr-tt"><option value="">Select</option>' + opts + '<option value="Leave">Leave Day</option></select></div>' +
       '<div class="dtr-field"><label class="dtr-label">Work Type</label><select class="dtr-select dtr-wtype"><option value="Productive">Productive</option><option value="NPT">NPT</option></select></div>' +
-      '<div class="dtr-field"><label class="dtr-label">Hours</label><input type="number" class="dtr-input dtr-hrs" min="0" max="8" step="0.5" placeholder="0.0"></div>' +
+      '<div class="dtr-field"><label class="dtr-label">Minutes <span style="font-size:.71rem;color:var(--text3)">(max 480)</span></label><input type="number" class="dtr-input dtr-hrs" min="0" max="480" step="1" placeholder="e.g. 240"></div>' +
       '<div class="dtr-field"><label class="dtr-label">NPT Hours</label><div class="npt-box">—</div></div></div>' +
       '<div class="comments-box" id="req-comment-' + n + '"><div class="dtr-field" style="margin-top:4px"><label class="dtr-label dtr-comment-label">Comments <span class="req-star">*</span></label><textarea class="dtr-input dtr-adhoc" rows="2" placeholder="Add details..." style="resize:vertical;min-height:52px"></textarea></div></div>' +'<div class="opt-note-toggle" data-action="toggle-note" data-n="' + n + '">📝 <span class="opt-note-lbl">Add optional note</span></div><div class="opt-note-box" id="opt-note-' + n + '" style="display:none"><div class="dtr-field" style="margin-top:6px"><label class="dtr-label">Note <span style="color:var(--text3);font-weight:400">(optional)</span></label><textarea class="dtr-input dtr-note" rows="2" placeholder="Any additional context..." style="resize:vertical;min-height:48px"></textarea></div></div>' +
       '<div class="leave-tag"><span>Leave:</span>' +
@@ -1071,10 +1079,63 @@
     const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = isNPT ? 'NPT' : 'Productive';
     recalcNPT(); updateDayViz();
   }
-  function makeLeave(card) { if (!card) return; card.classList.add('leave'); card.querySelector('.leave-tag').classList.add('show'); const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = 'NPT'; const hi = card.querySelector('.dtr-hrs'); if (hi) hi.value = ''; const nb = card.querySelector('.npt-box'); if (nb) { nb.textContent = '8.0h NPT'; nb.className = 'npt-box'; } const ts = card.querySelector('.dtr-tt'); if (ts) ts.value = 'Leave'; updateDayViz(); }
+  function makeLeave(card) { if (!card) return; card.classList.add('leave'); card.querySelector('.leave-tag').classList.add('show'); const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = 'NPT'; const hi = card.querySelector('.dtr-hrs'); if (hi) hi.value = '480'; const nb = card.querySelector('.npt-box'); if (nb) { nb.textContent = '480 NPT mins (full day)'; nb.className = 'npt-box'; } const ts = card.querySelector('.dtr-tt'); if (ts) ts.value = 'Leave'; updateDayViz(); }
   function setLeaveType(card, type) { if (!card) return; card.querySelectorAll('.leave-type-btn').forEach(b => b.classList.toggle('active', b.dataset.val === type)); const h = type === 'full' ? 8 : 4; const ld = card.querySelector('.leave-hours-display'); if (ld) ld.textContent = h + '.0h'; const nb = card.querySelector('.npt-box'); if (nb) nb.textContent = h + '.0h NPT'; updateDayViz(); }
-  function recalcNPT() { qa('.task-card').forEach(card => { if (card.classList.contains('leave')) return; const h = parseFloat(card.querySelector('.dtr-hrs')?.value)||0, wt = card.querySelector('.dtr-wtype')?.value||'Productive', nb = card.querySelector('.npt-box'); if (!nb) return; if (h===0){nb.textContent='—';nb.className='npt-box';return;} if (wt==='Productive'){nb.textContent=Math.max(0,WH-h).toFixed(1);nb.className='npt-box prod';}else{nb.textContent=h.toFixed(1)+' NPT';nb.className='npt-box';} }); }
-  function updateDayViz() { let prod=0,npt=0; qa('.task-card').forEach(card=>{if(card.classList.contains('leave')){npt+=8;return;}const h=parseFloat(card.querySelector('.dtr-hrs')?.value)||0,wt=card.querySelector('.dtr-wtype')?.value||'Productive';if(wt==='NPT')npt+=h;else{prod+=h;npt+=Math.max(0,WH-h);}}); npt=Math.min(WH,Math.max(0,npt));prod=Math.min(WH,prod); const pEl=q('#dviz-prod'),nEl=q('#dviz-npt'),pv=q('#dviz-prod-val'),nv=q('#dviz-npt-val'),sv=q('#dviz-summary'); if(pEl)pEl.style.width=(prod/WH*100)+'%';if(nEl)nEl.style.width=(npt/WH*100)+'%';if(pv)pv.textContent=prod.toFixed(1)+'h';if(nv)nv.textContent=npt.toFixed(1)+'h';if(sv)sv.textContent=prod.toFixed(1)+'h prod + '+npt.toFixed(1)+'h NPT / 8h'; }
+  function recalcNPT() {
+    // Validate total doesn't exceed 480 mins
+    let totalMins = 0;
+    qa('.task-card').forEach(card => {
+      if (card.classList.contains('leave')) { totalMins += 480; return; }
+      const mins = parseInt(card.querySelector('.dtr-hrs')?.value)||0;
+      totalMins += mins;
+    });
+    const overLimit = totalMins > WH;
+    // Update each card's NPT display
+    qa('.task-card').forEach(card => {
+      if (card.classList.contains('leave')) return;
+      const mins = parseInt(card.querySelector('.dtr-hrs')?.value)||0;
+      const wt   = card.querySelector('.dtr-wtype')?.value||'Productive';
+      const nb   = card.querySelector('.npt-box');
+      const inp  = card.querySelector('.dtr-hrs');
+      if (inp) inp.style.borderColor = overLimit ? 'var(--red)' : '';
+      if (!nb) return;
+      if (mins === 0) { nb.textContent='—'; nb.className='npt-box'; return; }
+      if (wt === 'Productive') {
+        const npt = Math.max(0, WH - mins);
+        nb.textContent = npt + ' NPT mins';
+        nb.className = 'npt-box prod';
+      } else {
+        nb.textContent = mins + ' NPT mins';
+        nb.className = 'npt-box';
+      }
+    });
+    // Show total warning
+    const warnEl = q('#day-limit-warn');
+    if (warnEl) {
+      warnEl.style.display = overLimit ? 'block' : 'none';
+      warnEl.textContent = '⚠️ Total ' + totalMins + ' mins exceeds 480 mins/day limit';
+    }
+  }
+  function updateDayViz() {
+    let prod=0, npt=0;
+    qa('.task-card').forEach(card => {
+      if (card.classList.contains('leave')) { npt += 480; return; }
+      const mins = parseInt(card.querySelector('.dtr-hrs')?.value)||0;
+      const wt   = card.querySelector('.dtr-wtype')?.value||'Productive';
+      if (wt === 'NPT') npt += mins;
+      else { prod += mins; npt += Math.max(0, WH - mins); }
+    });
+    npt  = Math.min(WH, Math.max(0, npt));
+    prod = Math.min(WH, prod);
+    const pct   = m => Math.round(m/WH*100);
+    const toHM  = m => { const h=Math.floor(m/60),mn=m%60; return h>0?(mn>0?h+'h '+mn+'m':h+'h'):mn+'m'; };
+    const pEl=q('#dviz-prod'),nEl=q('#dviz-npt'),pv=q('#dviz-prod-val'),nv=q('#dviz-npt-val'),sv=q('#dviz-summary');
+    if (pEl) pEl.style.width = pct(prod)+'%';
+    if (nEl) nEl.style.width = pct(npt)+'%';
+    if (pv)  pv.textContent  = toHM(prod);
+    if (nv)  nv.textContent  = toHM(npt);
+    if (sv)  sv.textContent  = toHM(prod)+' prod + '+toHM(npt)+' NPT / 8h (480 mins)';
+  }
 
   async function doSubmit() {
     // ── Collect form values ──────────────────────────────────────────────
@@ -1093,7 +1154,8 @@
           employeeName: authState.name,
           taskType:     'Leave',
           hours:        0,
-          npt:          lh,
+          npt:          parseFloat((lh).toFixed(2)),
+          minutes:      0,
           workType:     'NPT',
           adhoc:        '',
           shift,
@@ -1105,7 +1167,7 @@
 
       const tt  = card.querySelector('.dtr-tt')?.value    || '';
       const wt  = card.querySelector('.dtr-wtype')?.value || 'Productive';
-      const hrs = parseFloat(card.querySelector('.dtr-hrs')?.value) || 0;
+      const mins = parseInt(card.querySelector('.dtr-hrs')?.value) || 0;
       const reqComment = (card.querySelector('.dtr-adhoc')?.value || '').trim();
       const optNote    = (card.querySelector('.dtr-note')?.value   || '').trim();
       const adhoc = reqComment + (reqComment && optNote ? ' | ' + optNote : optNote || '');
@@ -1114,23 +1176,25 @@
       if (!tt) {
         toast('Select a task type for each row', 'err'); hasErr = true; return;
       }
-      if (hrs <= 0 && wt !== 'NPT') {
-        toast('Enter hours worked (must be > 0)', 'err'); hasErr = true; return;
+      if (mins <= 0 && wt !== 'NPT') {
+        toast('Enter minutes worked (must be > 0)', 'err'); hasErr = true; return;
       }
-      if (hrs > 8) {
-        toast('Max 8 hours per task', 'err'); hasErr = true; return;
+      if (mins > 480) {
+        toast('Max 480 minutes (8h) per task', 'err'); hasErr = true; return;
       }
       if ((tt === 'Ad-hoc Tasks' || tt === 'Other' || tt === 'Meeting') && !reqComment) {
         toast('Please add a comment for ' + tt, 'err'); hasErr = true; return;
       }
 
-      const nptHrs = wt === 'NPT' ? hrs : Math.max(0, WH - hrs);
+      const nptMins = wt === 'NPT' ? mins : Math.max(0, WH - mins);
 
       tasks.push({
         employeeName: authState.name,
         taskType:     tt,
-        hours:        hrs,
-        npt:          nptHrs,
+        hours:        parseFloat((mins/60).toFixed(2)),
+        npt:          parseFloat((nptMins/60).toFixed(2)),
+        minutes:      mins,
+        nptMinutes:   nptMins,
         workType:     wt,
         adhoc,
         shift,
@@ -1141,6 +1205,12 @@
 
     if (hasErr || !tasks.length) {
       if (!hasErr) toast('No tasks to submit', 'err');
+      return;
+    }
+    // Enforce 480 min/day total
+    const totalDayMins = tasks.reduce((a,t) => a + (t.minutes||Math.round(t.hours*60)||0), 0);
+    if (totalDayMins > 480) {
+      toast('❌ Total ' + totalDayMins + ' mins exceeds the 480 min/day (8h) limit. Please adjust.', 'err');
       return;
     }
 
@@ -1495,6 +1565,9 @@
   }
 
   function attMultiPick(dk) {
+    // Block weekends
+    const dow = new Date(dk+'T12:00:00').getDay();
+    if (dow === 0 || dow === 6) { toast('Saturday & Sunday are mandatory off days', 'err'); return; }
     // Toggle selection in Set
     if (attMultiSelect.has(dk)) {
       attMultiSelect.delete(dk);
@@ -1542,7 +1615,9 @@
 
   async function attBulkApply(status) {
     if (!status || attMultiSelect.size === 0) return;
-    const dks = [...attMultiSelect];
+    // Filter out weekends — cannot mark Sat/Sun
+    const dks = [...attMultiSelect].filter(dk => { const d = new Date(dk+'T12:00:00').getDay(); return d !== 0 && d !== 6; });
+    if (dks.length === 0) { toast('No working days selected — Sat/Sun cannot be marked', 'err'); return; }
     const cfg = STATUS_CFG[status] || {};
 
     // 1. Instant DOM update — all cards immediately show new status
@@ -2752,11 +2827,16 @@
       '<div class="stat-card gb"><div class="lbl">Total Hours</div><div class="val">'+totalH.toFixed(1)+'h</div></div>' +
       '<div class="stat-card amb"><div class="lbl">NPT Hours</div><div class="val">'+nptH.toFixed(1)+'h</div></div>' +
       '<div class="stat-card pb"><div class="lbl">Members</div><div class="val">'+getAllMembers().length+'</div></div></div>' +
-      '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
-      '<input id="adm-tk-name" class="dtr-input" placeholder="Filter by name..." style="max-width:180px" value="'+(nameF||'')+'">'+
-      '<select id="adm-tk-type" class="dtr-select" style="max-width:150px"><option value="">All Work Types</option><option value="Productive"'+(typeF==='Productive'?' selected':'')+'>Productive</option><option value="NPT"'+(typeF==='NPT'?' selected':'')+'>NPT</option></select>'+
-      '<select id="adm-tk-task" class="dtr-select" style="max-width:170px"><option value="">All Task Types</option>'+TASK_TYPES.map(t=>'<option value="'+t+'"'+(taskF===t?' selected':'')+'>'+t+'</option>').join('')+'</select>'+
-      '<select id="adm-tk-sort" class="dtr-select" style="max-width:140px"><option value="date"'+(sortF==='date'?' selected':'')+'>Sort: Latest</option><option value="name"'+(sortF==='name'?' selected':'')+'>Sort: Name</option><option value="hours"'+(sortF==='hours'?' selected':'')+'>Sort: Hours</option></select>'+
+      '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">' +
+      '<input id="adm-tk-name" class="dtr-input" placeholder="Search name..." style="max-width:160px" value="'+(nameF||'')+'">'+
+      '<select id="adm-tk-assoc" class="dtr-select" style="max-width:160px">'+
+        '<option value="">All Associates</option>'+
+        getAllMembers().map(m=>'<option value="'+m+'"'+(nameF===m.toLowerCase()?' selected':'')+'>'+m+'</option>').join('')+
+      '</select>'+
+      '<select id="adm-tk-type" class="dtr-select" style="max-width:140px"><option value="">All Work Types</option><option value="Productive"'+(typeF==='Productive'?' selected':'')+'>Productive</option><option value="NPT"'+(typeF==='NPT'?' selected':'')+'>NPT</option></select>'+
+      '<select id="adm-tk-task" class="dtr-select" style="max-width:160px"><option value="">All Task Types</option>'+TASK_TYPES.map(t=>'<option value="'+t+'"'+(taskF===t?' selected':'')+'>'+t+'</option>').join('')+'</select>'+
+      '<select id="adm-tk-sort" class="dtr-select" style="max-width:130px"><option value="date"'+(sortF==='date'?' selected':'')+'>Latest</option><option value="name"'+(sortF==='name'?' selected':'')+'>By Name</option><option value="hours"'+(sortF==='hours'?' selected':'')+'>By Hours</option></select>'+
+      (nameF?'<button class="btn btn-ghost btn-xs" data-action="adm-tk-clear">✕ Clear</button>':'')+
       '</div>'+
       '<div class="tbl-wrap"><table class="dtr-table"><thead><tr>' +
       '<th>#</th><th>Date</th><th>Employee</th><th>Task Type</th><th>Work Type</th><th>Hours</th><th>NPT Hrs</th><th>Shift</th><th>Notes</th><th>Submitted</th>' +
@@ -2775,9 +2855,18 @@
       '</tbody></table></div>';
 
     // Wire filters
-    ['#adm-tk-name','#adm-tk-type','#adm-tk-task','#adm-tk-sort'].forEach(sel=>{
+    ['#adm-tk-name','#adm-tk-assoc','#adm-tk-type','#adm-tk-task','#adm-tk-sort'].forEach(sel=>{
       const inp=el.querySelector(sel);
-      if(inp) inp.addEventListener(sel==='#adm-tk-name'?'input':'change',()=>renderAdminTeamTracker());
+      if (inp) {
+        inp.addEventListener(sel==='#adm-tk-name'?'input':'change', () => {
+          // Sync associate dropdown → name filter
+          if (sel === '#adm-tk-assoc') {
+            const nInp = el.querySelector('#adm-tk-name');
+            if (nInp) nInp.value = inp.value.toLowerCase();
+          }
+          renderAdminTeamTracker();
+        });
+      }
     });
   }
 
@@ -3045,7 +3134,21 @@
     const d = new Date(); d.setDate(d.getDate()-1);
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
   }
-  function isAllowedDate(s){ return s===todayStr()||s===yesterdayStr(); }
+  // Previous WORKING day: Mon→Fri, Tue-Sat→prev calendar day, Sun→Fri
+  function prevWorkingDayStr() {
+    const d   = new Date();
+    const dow = d.getDay(); // 0=Sun,1=Mon,...,6=Sat
+    // Monday → go back 3 days to Friday
+    // Sunday → go back 2 days to Friday
+    const back = dow === 1 ? 3 : dow === 0 ? 2 : 1;
+    d.setDate(d.getDate() - back);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  function prevWorkingDayLabel() {
+    const dow = new Date().getDay();
+    return dow === 1 ? 'Friday' : dow === 0 ? 'Friday' : 'Yesterday';
+  }
+  function isAllowedDate(s) { return s===todayStr() || s===prevWorkingDayStr(); }
   function formatDate(d)  { return new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
   function formatDay(d)   { return new Date(d+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'}); }
   function dlCSV(csv,fn)  { const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=fn;a.click(); }

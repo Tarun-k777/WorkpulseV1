@@ -29,8 +29,8 @@
   // ═══════════════════════════════════════════════════════════════════════
   const SP = {
     SITE:        'https://amazon.sharepoint.com/sites/teamdailytask',
-    TASK_LIST:   'DailyTaskReport',      // existing task list
-    STATUS_LIST: 'AttendanceStatus',     // NEW: WFO/WFH/Leave tracking
+    TASK_LIST:   'TaskReport',            // new SP list
+    STATUS_LIST: 'AttendanceLog',        // Attendance list
     NPT_LIST:    'NPT log',               // SharePoint list name (with space)
   };
 
@@ -749,6 +749,7 @@
   function doLogout() {
     const name = authState.name;
     clearSession();
+    clearDigestCache();
     submissions = [];
     authState   = { loggedIn:false, name:'', sid:'' };
     currentRole = 'associate';
@@ -1177,7 +1178,8 @@
     } else if (posted > 0) {
       toast('⚠️ ' + posted + '/' + tasks.length + ' saved to SP · ' + (tasks.length - posted) + ' queued', 'info');
     } else {
-      toast('❌ SP unreachable — saved locally. Open ' + SP.SITE + ' in a tab, then retry in Settings.', 'err');
+      toast('❌ Tasks saved locally only — SP auth failed. Steps: 1) Open ' + SP.SITE + ' in a tab  2) Log in  3) Come back and resubmit or use Settings → Retry Queue', 'err');
+      console.warn('[WorkPulse] All', tasks.length, 'tasks went to queue — SP unreachable');
     }
 
     // ── Reset form ────────────────────────────────────────────────────────
@@ -1810,7 +1812,7 @@
       safeSave('dtr_npt2', nptCache);
       toast('✅ NPT logged — ' + type + ' (' + mins + 'm) saved to SharePoint', 'ok');
     } else {
-      toast('⏳ NPT saved locally — will sync when SP is available. Check Settings to retry.', 'info');
+      toast('⚠️ NPT saved locally — queued for sync. Go to Settings → Retry Queue.', 'info');
     }
 
     if (btn) { btn.disabled = false; btn.innerHTML = ic.add + ' Submit NPT Entry'; }
@@ -1829,7 +1831,8 @@
       '<div class="card"><div class="card-title">' + ic.sync + ' SharePoint — Single Site</div>' +
       '<div class="info-banner" style="margin-bottom:12px">' +
 '<div><strong>Your data is private.</strong> You only see your own submissions, attendance and NPT. ' +
-'Admins can see the full team. All data is stored in: <code>' + SP.SITE + '</code></div></div>' +
+'Admins can see the full team. All data is stored in: <code>' + SP.SITE + '</code></div>' +
+      '<div class="warn-banner" style="margin-top:10px">⚠️ <strong>Associates must have Contribute permission on the SharePoint site</strong> for their entries to sync directly. Ask your admin to grant Contribute access to all associates at: ' + SP.SITE + ' → Site Settings → Site Permissions → Grant Permissions.</div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' +
       '<button class="btn btn-ghost btn-sm" data-action="test-sp">Test Connection</button>' +
       '<button class="btn btn-ghost btn-sm" data-action="test-npt" style="border-color:rgba(163,113,247,.3);color:var(--accent2)">🧪 Test NPT Insert</button>' +
@@ -1838,8 +1841,8 @@
       '<p style="font-size:.8rem;color:var(--text3)">' + (qLen===0?'✅ All synced':qLen+' pending sync') + '</p>' +
       '<div style="margin-top:14px"><div style="font-size:.78rem;color:var(--text3)"><strong>SharePoint Lists Required:</strong></div>' +
       '<div style="margin-top:6px;font-size:.78rem;color:var(--text3);line-height:2">' +
-      '📋 Task List: <code style="color:var(--accent)">' + SP.TASK_LIST + '</code><br>' +
-      '📅 Attendance List: <code style="color:var(--accent)">' + SP.STATUS_LIST + '</code> (columns: EmployeeName, StatusDate, WorkStatus, Process, TaskNotes, UpdatedAt)<br>' +
+      '📋 Task List: <code style="color:var(--accent)">' + SP.TASK_LIST + '</code> (TaskReport)<br>' +
+      '📅 Attendance List: <code style="color:var(--accent)">' + SP.STATUS_LIST + '</code> (AttendanceLog — columns: EmployeeName, StatusDate, WorkStatus, Shift, UpdatedAt)<br>' +
       '⏱ NPT List: <code style="color:var(--accent)">' + SP.NPT_LIST + '</code> (columns: Title, EmployeeName, NPTDate, NPTType, DurationMins, Description, LoggedAt)</div></div></div>' +
       '<div class="card"><div class="card-title">🗑 My Data</div>' +
       '<div style="font-size:.82rem;color:var(--text2);margin-bottom:10px">' +
@@ -1857,7 +1860,16 @@
   // SHAREPOINT — robust posting with queue fallback
   // ═══════════════════════════════════════════════════════════════════
 
+  // Digest cache — valid for 25 minutes (SP digest expires at 30m)
+  let _digestToken   = '';
+  let _digestExpiry  = 0;
+
   async function getDigest() {
+    // Return cached token if still valid
+    if (_digestToken && Date.now() < _digestExpiry) {
+      console.log('[WorkPulse] Using cached digest (expires in', Math.round((_digestExpiry-Date.now())/1000), 's)');
+      return _digestToken;
+    }
     return new Promise(resolve => {
       GM_xmlhttpRequest({
         method: 'POST',
@@ -1868,36 +1880,48 @@
         },
         withCredentials: true,
         onload: res => {
+          console.log('[WorkPulse] getDigest response status:', res.status);
+          if (res.status === 401 || res.status === 403) {
+            toast('❌ SP login required — open ' + SP.SITE + ' in a tab, log in, then retry', 'err');
+            console.error('[WorkPulse] getDigest auth error:', res.status, res.responseText.slice(0,200));
+            resolve(null); return;
+          }
+          if (res.status === 0) {
+            toast('❌ SP unreachable (status 0) — ensure ' + SP.SITE + ' is open in another tab', 'err');
+            resolve(null); return;
+          }
           try {
-            if (res.status === 401 || res.status === 403) {
-              toast('❌ SP auth error — open ' + SP.SITE + ' in a tab and log in first', 'err');
+            const parsed = JSON.parse(res.responseText);
+            const info   = parsed.d && parsed.d.GetContextWebInformation;
+            if (!info) {
+              console.error('[WorkPulse] getDigest: no GetContextWebInformation in response:', res.responseText.slice(0,300));
+              toast('❌ SP digest response invalid (' + res.status + ') — see F12 console', 'err');
               resolve(null); return;
             }
-            const info  = JSON.parse(res.responseText).d.GetContextWebInformation;
-            const token = info.FormDigestValue;
-            if (!token) { toast('❌ SP digest empty', 'err'); resolve(null); return; }
-            // Validate digest is scoped to our subsite not root tenant
+            const token  = info.FormDigestValue;
             const webUrl = (info.WebFullUrl || '').toLowerCase();
-            if (webUrl && !webUrl.includes('teamdailytask')) {
-              toast('❌ SP session wrong scope (' + webUrl + '). Open ' + SP.SITE + ' in a tab first.', 'err');
-              console.error('[WorkPulse] Wrong digest scope:', webUrl);
-              resolve(null); return;
-            }
-            console.log('[WorkPulse] ✅ SP digest OK, scope:', webUrl || 'ok', 'length:', token.length);
+            console.log('[WorkPulse] ✅ SP digest OK | scope:', webUrl, '| length:', token.length);
+            // Cache for 25 minutes
+            _digestToken  = token;
+            _digestExpiry = Date.now() + 25 * 60 * 1000;
             resolve(token);
           } catch(ex) {
-            toast('❌ SP contextinfo failed (' + res.status + ')', 'err');
-            console.error('[WorkPulse] getDigest error:', ex, res.responseText.slice(0,200));
+            console.error('[WorkPulse] getDigest parse error:', ex.message, '| status:', res.status, '| body:', res.responseText.slice(0,300));
+            toast('❌ SP response parse error (' + res.status + '): ' + ex.message, 'err');
             resolve(null);
           }
         },
-        onerror: () => {
-          toast('❌ Cannot reach SP. Open ' + SP.SITE + ' in a tab first.', 'err');
+        onerror: (err) => {
+          console.error('[WorkPulse] getDigest network error:', err);
+          toast('❌ SP unreachable — open ' + SP.SITE + ' in a tab first, then retry', 'err');
           resolve(null);
         }
       });
     });
   }
+
+  // Clear digest cache (called after scope changes or logout)
+  function clearDigestCache() { _digestToken = ''; _digestExpiry = 0; }
 
   async function spInsert(listName, metaType, body) {
     const token = await getDigest();
@@ -2045,15 +2069,12 @@
       'NPTHours':     parseFloat(t.npt)   || 0,
       'WorkType':     t.workType      || 'Productive',
       'AdHocDetails': t.adhoc         || '',
+      'Shift':        t.shift         || '',
       'TaskDate':     localDateSP(t.date || todayStr()),
       'SubmittedAt':  t.submittedAt   || nowUTC()
     };
 
-    // Only add Shift if SP list has that column — check via _listTypes cache
-    // We try without it first (safe); if you add Shift column to SP, it will auto-work
-    // via the shift field on the task object being available
-
-    console.log('[WorkPulse] postTask → spInsert:', SP.TASK_LIST, body);
+    console.log('[WorkPulse] postTask → spInsert:', SP.TASK_LIST, 'date:', body.TaskDate);
     const ok = await spInsert(SP.TASK_LIST, type, body);
     if (ok) {
       console.log('[WorkPulse] ✅ Task saved to SP:', t.employeeName, t.taskType, t.date);
@@ -2151,8 +2172,6 @@
               'EmployeeName': e.name     || '',
               'StatusDate':   spDate,
               'WorkStatus':   e.status   || '',
-              'Process':      e.process  || '',
-              'TaskNotes':    e.task     || '',
               'Shift':        e.shift    || '',
               'UpdatedAt':    e.updatedAt || nowUTC()
             };
@@ -2182,6 +2201,7 @@
 
   async function flushQueueManual() {
     toast('Retrying queued items...', 'info');
+    clearDigestCache(); // force fresh token
     await flushQueue();
     const r = safeLoad('dtr_spq2', []).length;
     toast(r === 0 ? '✅ All synced' : '⚠️ ' + r + ' still pending', r === 0 ? 'ok' : 'err');
@@ -2322,42 +2342,48 @@
   }
 
   function fetchOwnAttendance(silent) {
-    // Fetch only THIS user's attendance records from SP → populate statusCache
     if (!authState.name) return;
-    const nameEsc = authState.name.replace(/'/g,"''");
+    const nameEsc = authState.name.replace(/'/g, "''");
     const url = SP.SITE + "/_api/web/lists/GetByTitle('" + SP.STATUS_LIST + "')/items" +
       "?$filter=EmployeeName eq '" + nameEsc + "'" +
-      "&$top=5000&$orderby=StatusDate desc" +
-      "&$select=EmployeeName,StatusDate,WorkStatus,Process,TaskNotes";
+      "&$top=5000&$orderby=StatusDate desc";
     GM_xmlhttpRequest({
-      method:'GET', url:url,
-      headers:{'Accept':'application/json;odata=verbose'},
-      withCredentials:true,
+      method: 'GET', url,
+      headers: { 'Accept': 'application/json;odata=verbose' },
+      withCredentials: true,
       onload: res => {
+        if (res.status < 200 || res.status >= 300) {
+          let msg=''; try{msg=JSON.parse(res.responseText).error.message.value||'';}catch{}
+          console.error('[WorkPulse] fetchOwnAttendance:', res.status, msg||res.responseText.slice(0,200));
+          if (!silent) toast('❌ Attendance sync failed (' + res.status + '): ' + (msg||'check F12'), 'err');
+          return;
+        }
         try {
-          const items = JSON.parse(res.responseText).d.results || [];
+          const parsed = JSON.parse(res.responseText);
+          if (!parsed.d) {
+            console.error('[WorkPulse] fetchOwnAttendance: no .d in response', res.responseText.slice(0,200));
+            if (!silent) toast('❌ Attendance list error — check list name: ' + SP.STATUS_LIST, 'err');
+            return;
+          }
+          const items = parsed.d.results || [];
           items.forEach(it => {
-            const rawDate = it.StatusDate || '';
-            const dk = rawDate.includes('T') ? rawDate.split('T')[0] : rawDate;
+            const dk = (it.StatusDate||'').split('T')[0];
             if (dk) {
-              // Only update if SP has a value — don't overwrite newer local data
-              if (!statusCache[dk] || statusCache[dk]._fromSP) {
-                statusCache[dk] = {
-                  status:  it.WorkStatus || '',
-                  process: it.Process    || '',
-                  task:    it.TaskNotes  || '',
-                  _fromSP: true
-                };
-              }
+              statusCache[dk] = {
+                status:  it.WorkStatus || '',
+                shift:   it.Shift      || '',
+                date:    dk,
+                name:    authState.name,
+                _fromSP: true
+              };
             }
           });
           safeSaveObj('dtr_status2', statusCache);
-          if (!silent) toast('✅ Attendance loaded from SharePoint','ok');
-          // Re-render whichever view is active
-          if (currentView === 'calendar')  renderMyCalendar();
-          if (currentView === 'mark')      renderMarkAttendance();
+          console.log('[WorkPulse] fetchOwnAttendance:', items.length, 'records from AttendanceLog');
+          if (!silent) toast('✅ Attendance synced — ' + items.length + ' records', 'ok');
+          if (currentView === 'weekly')   renderWeeklyCalendar();
+          if (currentView === 'calendar') renderMyCalendar();
           if (currentView === 'analytics') renderAnalytics();
-          // Update topbar status badge if today is now known
           const todaySt = statusCache[todayStr()];
           const pill = root.querySelector('.dtr-topbar-r .sp');
           if (pill && todaySt) {
@@ -2365,10 +2391,14 @@
             pill.textContent = todaySt.status;
           }
         } catch(ex) {
-          if (!silent) toast('❌ Attendance sync error: ' + ex.message,'err');
+          console.error('[WorkPulse] fetchOwnAttendance parse:', ex.message, res.responseText.slice(0,200));
+          if (!silent) toast('❌ Attendance sync error: ' + ex.message, 'err');
         }
       },
-      onerror: () => { if (!silent) toast('❌ Cannot reach SharePoint','err'); }
+      onerror: () => {
+        console.error('[WorkPulse] fetchOwnAttendance: network error');
+        if (!silent) toast('❌ Cannot reach SP for attendance', 'err');
+      }
     });
   }
 
@@ -2378,41 +2408,55 @@
   }
 
   function fetchOwnTasks(silent) {
-    // Fetch only THIS associate's tasks from SP (filtered by name)
     if (!authState.name) return;
     const nameEsc = authState.name.replace(/'/g, "''");
+    // No $select — fetch all columns to avoid missing column errors
     const url = SP.SITE + "/_api/web/lists/GetByTitle('" + SP.TASK_LIST + "')/items" +
       "?$filter=EmployeeName eq '" + nameEsc + "'" +
-      "&$top=500&$orderby=TaskDate desc" +
-      "&$select=EmployeeName,TaskType,HoursWorked,NPTHours,WorkType,AdHocDetails,TaskDate,SubmittedAt";
+      "&$top=500&$orderby=TaskDate desc";
     GM_xmlhttpRequest({
       method: 'GET', url: url,
-      headers: {'Accept': 'application/json;odata=verbose'},
+      headers: { 'Accept': 'application/json;odata=verbose' },
       withCredentials: true,
       onload: res => {
+        if (res.status < 200 || res.status >= 300) {
+          let msg=''; try{msg=JSON.parse(res.responseText).error.message.value||'';}catch{}
+          console.error('[WorkPulse] fetchOwnTasks:', res.status, msg||res.responseText.slice(0,200));
+          if (!silent) toast('❌ Task sync failed (' + res.status + '): ' + (msg||'check F12'), 'err');
+          return;
+        }
         try {
-          const items = JSON.parse(res.responseText).d.results || [];
-          // Merge SP items into local submissions (avoid duplicates by submittedAt)
-          const existingKeys = new Set(submissions.map(s => (s.employeeName||'') + '::' + (s.submittedAt||'')));
+          const parsed = JSON.parse(res.responseText);
+          if (!parsed.d) {
+            console.error('[WorkPulse] fetchOwnTasks: no .d', res.responseText.slice(0,200));
+            if (!silent) toast('❌ Task list error — check list name: ' + SP.TASK_LIST, 'err');
+            return;
+          }
+          const items = parsed.d.results || [];
+          // Keep only own entries then merge from SP
+          submissions = submissions.filter(s => s && s.employeeName === authState.name);
+          const existingKeys = new Set(submissions.map(s => (s.submittedAt||'')+'_'+(s.taskType||'')+'_'+(s.date||'')));
           let added = 0;
           items.forEach(it => {
-            const key = (it.EmployeeName||'') + '::' + (it.SubmittedAt||it.Created||'');
+            const spDate = (it.TaskDate||it.Created||'').split('T')[0];
+            const key    = (it.SubmittedAt||it.Created||'')+'_'+(it.TaskType||'')+'_'+spDate;
             if (!existingKeys.has(key)) {
               submissions.push({
-                employeeName: it.EmployeeName||'',
-                taskType:     it.TaskType||'',
-                hours:        it.HoursWorked||0,
-                npt:          it.NPTHours||0,
-                workType:     it.WorkType||'Productive',
-                adhoc:        it.AdHocDetails||'',
-                date:         (it.TaskDate||'').split('T')[0],
-                submittedAt:  it.SubmittedAt||it.Created||''
+                employeeName: it.EmployeeName  || authState.name,
+                taskType:     it.TaskType      || '',
+                hours:        parseFloat(it.HoursWorked) || 0,
+                npt:          parseFloat(it.NPTHours)    || 0,
+                workType:     it.WorkType      || 'Productive',
+                adhoc:        it.AdHocDetails  || '',
+                shift:        it.Shift         || '',
+                date:         spDate,
+                submittedAt:  it.SubmittedAt   || it.Created || ''
               });
               added++;
             }
           });
           if (added > 0) {
-            safeSave('dtr_subs4', submissions);
+            safeSave('dtr_subs_' + authState.name.toLowerCase().replace(/[^a-z0-9]+/g,'_'), submissions);
             updateSBStats();
             if (currentView === 'analytics') renderAnalytics();
             if (currentView === 'tracker')   renderTracker();
@@ -2719,50 +2763,90 @@
 
   // Admin fetch functions
   function fetchAdminTasks() {
-    toast('Syncing tasks...','info');
+    toast('Syncing tasks from TaskReport...','info');
     GM_xmlhttpRequest({
-      method:'GET',
-      url:SP.SITE+"/_api/web/lists/GetByTitle('"+SP.TASK_LIST+"')/items?$top=5000&$orderby=TaskDate desc",
-      headers:{'Accept':'application/json;odata=verbose'}, withCredentials:true,
-      onload:res=>{
+      method: 'GET',
+      url: SP.SITE + "/_api/web/lists/GetByTitle('" + SP.TASK_LIST + "')/items?$top=5000&$orderby=TaskDate desc",
+      headers: { 'Accept': 'application/json;odata=verbose' },
+      withCredentials: true,
+      onload: res => {
+        if (res.status < 200 || res.status >= 300) {
+          let msg=''; try { msg=JSON.parse(res.responseText).error.message.value||''; } catch{}
+          toast('❌ Task sync failed (' + res.status + '): ' + (msg||'check F12'), 'err');
+          console.error('[WorkPulse] fetchAdminTasks:', res.status, res.responseText.slice(0,300));
+          return;
+        }
         try {
-          const items=JSON.parse(res.responseText).d.results||[];
-          submissions=items.map(it=>({
-            employeeName:it.EmployeeName||'', taskType:it.TaskType||'',
-            hours:parseFloat(it.HoursWorked)||0, npt:parseFloat(it.NPTHours)||0,
-            workType:it.WorkType||'Productive', adhoc:it.AdHocDetails||'',
-            shift:it.Shift||'', date:(it.TaskDate||it.Created||'').split('T')[0],
-            submittedAt:it.SubmittedAt||it.Created||''
+          const parsed = JSON.parse(res.responseText);
+          const items  = (parsed.d && parsed.d.results) ? parsed.d.results : [];
+          // Map exact column names from TaskReport list
+          submissions = items.map(it => ({
+            employeeName: it.EmployeeName || '',
+            taskType:     it.TaskType     || '',
+            hours:        parseFloat(it.HoursWorked) || 0,
+            npt:          parseFloat(it.NPTHours)    || 0,
+            workType:     it.WorkType     || 'Productive',
+            adhoc:        it.AdHocDetails || '',
+            shift:        it.Shift        || '',
+            date:         (it.TaskDate || it.Created || '').split('T')[0],
+            submittedAt:  it.SubmittedAt  || it.Created || ''
           }));
-          toast('✅ '+items.length+' tasks synced','ok');
-          if(currentView==='overview') renderAdminOverview();
-          if(currentView==='teamtrack') renderAdminTeamTracker();
-        } catch(e){ toast('❌ Task sync error: '+e.message,'err'); }
+          toast('✅ ' + items.length + ' tasks synced from TaskReport', 'ok');
+          console.log('[WorkPulse] fetchAdminTasks:', items.length, 'items');
+          if (currentView === 'overview')  renderAdminOverview();
+          if (currentView === 'teamtrack') renderAdminTeamTracker();
+        } catch(e) {
+          toast('❌ Task sync parse error: ' + e.message, 'err');
+          console.error('[WorkPulse] fetchAdminTasks parse:', e, res.responseText.slice(0,300));
+        }
       },
-      onerror:()=>toast('❌ Cannot reach SP','err')
+      onerror: () => toast('❌ Cannot reach SP for tasks', 'err')
     });
   }
 
   function fetchAdminAttendance() {
-    toast('Syncing attendance...','info');
+    toast('Syncing attendance from AttendanceLog...','info');
     GM_xmlhttpRequest({
-      method:'GET',
-      url:SP.SITE+"/_api/web/lists/GetByTitle('"+SP.STATUS_LIST+"')/items?$top=5000&$orderby=StatusDate desc&$select=EmployeeName,StatusDate,WorkStatus,Process,TaskNotes",
-      headers:{'Accept':'application/json;odata=verbose'}, withCredentials:true,
-      onload:res=>{
+      method: 'GET',
+      url: SP.SITE + "/_api/web/lists/GetByTitle('" + SP.STATUS_LIST + "')/items?$top=5000&$orderby=StatusDate desc",
+      headers: { 'Accept': 'application/json;odata=verbose' },
+      withCredentials: true,
+      onload: res => {
+        if (res.status < 200 || res.status >= 300) {
+          let msg=''; try{msg=JSON.parse(res.responseText).error.message.value||'';}catch{}
+          toast('❌ Attendance sync failed (' + res.status + '): ' + (msg||'check F12'), 'err');
+          console.error('[WorkPulse] fetchAdminAttendance:', res.status, res.responseText.slice(0,300));
+          return;
+        }
         try {
-          teamStatusCache_adm={};
-          (JSON.parse(res.responseText).d.results||[]).forEach(it=>{
-            const name=it.EmployeeName||'', dk=(it.StatusDate||'').split('T')[0];
-            if(name&&dk) teamStatusCache_adm[name+'::'+dk]={status:it.WorkStatus||'',process:it.Process||'',task:it.TaskNotes||''};
+          const parsed = JSON.parse(res.responseText);
+          if (!parsed.d) {
+            toast('❌ Attendance list error — check list name: ' + SP.STATUS_LIST, 'err');
+            return;
+          }
+          teamStatusCache_adm = {};
+          (parsed.d.results || []).forEach(it => {
+            const name = it.EmployeeName || '';
+            const dk   = (it.StatusDate  || '').split('T')[0];
+            if (name && dk) {
+              teamStatusCache_adm[name + '::' + dk] = {
+                status: it.WorkStatus || '',
+                shift:  it.Shift      || ''
+              };
+            }
           });
-          safeSaveObj('dtr_teamcache',teamStatusCache_adm);
-          toast('✅ Attendance synced','ok');
-          if(currentView==='attweek') renderAdminWeekView();
-          if(currentView==='overview') renderAdminOverview();
-        } catch(e){ toast('❌ Att sync error: '+e.message,'err'); }
+          safeSaveObj('dtr_teamcache', teamStatusCache_adm);
+          const total = Object.keys(teamStatusCache_adm).length;
+          toast('✅ Attendance synced — ' + total + ' records', 'ok');
+          console.log('[WorkPulse] fetchAdminAttendance:', total, 'records');
+          if (currentView === 'attweek')  renderAdminWeekView();
+          if (currentView === 'overview') renderAdminOverview();
+        } catch(e) {
+          toast('❌ Attendance parse error: ' + e.message, 'err');
+          console.error('[WorkPulse] fetchAdminAttendance parse:', e, res.responseText.slice(0,300));
+        }
       },
-      onerror:()=>toast('❌ Cannot reach SP','err')
+      onerror: () => toast('❌ Cannot reach SP for attendance', 'err')
     });
   }
 

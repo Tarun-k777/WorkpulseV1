@@ -5,6 +5,7 @@
 // @description  WorkPulse — SSO, role-based access (Associate/Admin/SuperAdmin), SP direct sync
 // @author       WorkPulse Team
 // @match        https://share.amazon.com/Pages/default.aspx
+// @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
@@ -46,7 +47,7 @@
     'Power Outage','Network Issue','Admin Task','Other'
   ];
   let nptActiveType = '';
-  const STATUSES   = ['WFO','WFH','SL','CL','AL'];
+  const STATUSES   = ['WFO','WFH','SL','CL','AL','Optional Off'];
   // ── Authorised users ──────────────────────────────────────────────────
   const ASSOCIATES = [
     'Ameralih','Bhurak','Pmred','Harikavr','Zshahnaz',
@@ -73,6 +74,8 @@
     SL:  { label:'Sick Leave',       cls:'sp-sl',  color:'#f85149', bg:'rgba(248,81,73,.14)'  },
     CL:  { label:'Casual Leave',     cls:'sp-cl',  color:'#d29922', bg:'rgba(210,153,34,.14)' },
     AL:  { label:'Annual Leave',     cls:'sp-al',  color:'#a371f7', bg:'rgba(163,113,247,.14)'},
+    'Optional Off':   { label:'Optional Off',  cls:'sp-oo',  color:'#6b7280', bg:'rgba(107,114,128,.14)' },
+    'Mandatory Off':  { label:'National Holiday', cls:'sp-mo', color:'#e8433a', bg:'rgba(232,67,58,.12)' },
   };
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -87,6 +90,15 @@
   function generateSID(){return Math.random().toString(36).slice(2)+Date.now().toString(36);}
   function loadSession(){try{const r=GM_getValue('dtr_sess2','');if(!r)return null;const s=JSON.parse(r);return(s&&s.name&&s.sid)?s:null;}catch(e){return null;}}
   function saveSession(name){const s={name,sid:generateSID(),at:new Date().toISOString()};GM_setValue('dtr_sess2',JSON.stringify(s));return s;}
+  // Per-user shift preference — persists across refresh/logout
+  function saveShift(name, shift) {
+    if (!name || !shift) return;
+    GM_setValue('dtr_shift_' + name.toLowerCase(), shift);
+  }
+  function loadShift(name) {
+    if (!name) return '8-5';
+    return GM_getValue('dtr_shift_' + name.toLowerCase(), '8-5') || '8-5';
+  }
   function clearSession(){GM_setValue('dtr_sess2','');}
 
   // App state
@@ -711,8 +723,14 @@
     }
     const sess = saveSession(name);
     authState  = { loggedIn:true, name, sid:sess.sid };
+    // Apply mandatory national holidays for associates
+    if (role !== 'admin') { applyMandatoryHolidays(name); }
     buildApp();
     toast('Welcome, ' + name + (role==='admin'?' 🛡':'') + '!', 'ok');
+    // Load saved shift preference for this associate
+    if (role !== 'admin') {
+      authState.shift = loadShift(name);
+    }
     // Pre-fetch SP list types in background
     setTimeout(async () => {
       await getListType(SP.TASK_LIST,   'task');
@@ -934,6 +952,8 @@
         // Block weekends — cannot mark Sat/Sun
         const _dow = new Date(v+'T12:00:00').getDay();
         if (_dow === 0 || _dow === 6) { toast('Saturday & Sunday are mandatory off days', 'err'); break; }
+        // Block mandatory national holidays
+        if (isMandatoryOff(v)) { toast('🇮🇳 ' + (statusCache[v]?.name||'National Holiday') + ' — mandatory off, cannot be changed', 'err'); break; }
         attDate = v;
         const _saved = statusCache[v] || {};
         // Strip sub-type suffix when restoring base status
@@ -960,6 +980,14 @@
       case 'att-leave-day':   attSelectLeaveDay(v); break;
       case 'att-leave-half':  attSelectLeaveHalf(v); break;
       case 'att-save':      attSave(); break;
+      case 'att-shift-change': {
+        const _shiftEl = q('#att-shift');
+        if (_shiftEl && _shiftEl.value && authState.name) {
+          authState.shift = _shiftEl.value;
+          saveShift(authState.name, _shiftEl.value);
+        }
+        break;
+      }
       case 'cal-sync':      toast('Loading your attendance...','info'); fetchOwnAttendance(false); break;
       case 'cal-prev':      calMonthOffset--; renderMyCalendar(); break;
       case 'cal-next':      calMonthOffset++; renderMyCalendar(); break;
@@ -1018,7 +1046,7 @@
       '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="clear-submit">Clear All</button></div></div>' +
       '<div class="card"><div class="card-title">Employee Info</div><div class="g2">' +
       '<div class="dtr-field"><label class="dtr-label">Full Name</label><input class="dtr-input" value="' + authState.name + '" readonly style="cursor:default"></div>' +
-      '<div class="dtr-field"><label class="dtr-label">Shift</label><select id="a-shift" class="dtr-select"><option value="8-5">8 AM – 5 PM</option><option value="9-6">9 AM – 6 PM</option><option value="10-7">10 AM – 7 PM</option><option value="11-8">11 AM – 8 PM</option></select></div>' +
+      '<div class="dtr-field"><label class="dtr-label">Shift</label><select id="a-shift" class="dtr-select">' + (function(sv){ return '<option value="8-5"'+(sv==='8-5'?' selected':'')+'>8 AM – 5 PM</option>'+'<option value="9-6"'+(sv==='9-6'?' selected':'')+'>9 AM – 6 PM</option>'+'<option value="10-7"'+(sv==='10-7'?' selected':'')+'>10 AM – 7 PM</option>'+'<option value="11-8"'+(sv==='11-8'?' selected':'')+'>11 AM – 8 PM</option>';})(authState.shift||loadShift(authState.name)) + '</select></div>' +
       '<div class="dtr-field"><label class="dtr-label">Date <span style="font-size:.73rem;color:var(--text3)">(Today or Yesterday only)</span></label>' +
       '<div class="date-pill-row">' +
       '<button class="date-pill' + (selectedDate===todayStr()?' active':'') + '" data-action="pick-date" data-val="' + todayStr() + '">Today — ' + formatDate(todayStr()) + '</button>' +
@@ -1152,7 +1180,12 @@
   async function doSubmit() {
     // ── Collect form values ──────────────────────────────────────────────
     const dateVal = q('#a-date')?.value || todayStr();
-    const shift   = q('#a-shift')?.value || '8-5';
+    const shift   = q('#a-shift')?.value || authState.shift || '8-5';
+    // Persist shift choice for this user
+    if (shift && authState.name) {
+      authState.shift = shift;
+      saveShift(authState.name, shift);
+    }
     const cards   = Array.from(qa('.task-card'));
     const tasks   = [];
     let hasErr    = false;
@@ -1580,9 +1613,10 @@
   }
 
   function attMultiPick(dk) {
-    // Block weekends
+    // Block weekends and mandatory holidays
     const dow = new Date(dk+'T12:00:00').getDay();
     if (dow === 0 || dow === 6) { toast('Saturday & Sunday are mandatory off days', 'err'); return; }
+    if (isMandatoryOff(dk)) { toast('🇮🇳 ' + (statusCache[dk]?.name||'National Holiday') + ' — mandatory off', 'err'); return; }
     // Toggle selection in Set
     if (attMultiSelect.has(dk)) {
       attMultiSelect.delete(dk);
@@ -1723,13 +1757,9 @@
       (LEAVE_STATUSES.includes(selStatus) ? _buildLeaveDayPanel(selStatus, STATUS_CFG[selStatus]||{}) : '') + '</div>' +
       '<div class="dtr-field" style="margin-bottom:14px">' +
       '<label class="dtr-label">Shift Timing</label>' +
-      '<select class="dtr-select" id="att-shift" style="max-width:220px">' +
-      '<option value=""' + (!existing.shift?' selected':'') + '>— Select shift (optional) —</option>' +
-      '<option value="8-5"' + (existing.shift==='8-5'?' selected':'') + '>8 AM – 5 PM</option>' +
-      '<option value="9-6"' + (existing.shift==='9-6'?' selected':'') + '>9 AM – 6 PM</option>' +
-      '<option value="10-7"' + (existing.shift==='10-7'?' selected':'') + '>10 AM – 7 PM</option>' +
-      '<option value="11-8"' + (existing.shift==='11-8'?' selected':'') + '>11 AM – 8 PM</option>' +
-      '</select></div>' +
+      '<select class="dtr-select" id="att-shift" style="max-width:220px" data-action="att-shift-change">' +
+      '<option value="">— Select shift —</option>' +
+      (function(sv){ return '<option value="8-5"'+(sv==='8-5'?' selected':'')+'>8 AM – 5 PM</option>'+'<option value="9-6"'+(sv==='9-6'?' selected':'')+'>9 AM – 6 PM</option>'+'<option value="10-7"'+(sv==='10-7'?' selected':'')+'>10 AM – 7 PM</option>'+'<option value="11-8"'+(sv==='11-8'?' selected':'')+'>11 AM – 8 PM</option>';})(existing.shift || authState.shift || loadShift(authState.name)) + '</select></div>' +
       '<button class="att-save-btn" id="att-save-btn" data-action="att-save"' + (!selStatus ? ' disabled' : '') + '>' +
       ic.check + ' Save — ' + dateLabel + '</button>' +
       '</div>';
@@ -1873,7 +1903,9 @@
     if (!attSelectedStatus) { toast('Select a status first', 'err'); return; }
     const btn = q('[data-action="att-save"]');
     if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
-    const shift = q('#att-shift')?.value || '';
+    const shiftEl = q('#att-shift');
+    const shift   = (shiftEl?.value) || authState.shift || loadShift(authState.name) || '';
+    if (shift && authState.name) { authState.shift = shift; saveShift(authState.name, shift); }
     const effectiveStatus = getEffectiveStatus();
     const entry = { status: effectiveStatus, leaveDay: attLeaveDay, leaveHalf: attLeaveHalf, shift, date: attDate, name: authState.name, updatedAt: nowUTC() };
     statusCache[attDate] = entry;
@@ -2496,6 +2528,35 @@
       });
     });
   }
+
+  // ── MANDATORY NATIONAL HOLIDAYS ─────────────────────────────────────
+  const MANDATORY_HOLIDAYS = [
+    { month:1,  day:26, name:'Republic Day'        },
+    { month:4,  day:15, name:'Ambedkar Jayanti'    },
+    { month:5,  day:1,  name:'Labour Day'          },
+    { month:6,  day:2,  name:'Telangana Day'       },
+    { month:10, day:2,  name:'Gandhi Jayanti'      },
+  ];
+
+  function applyMandatoryHolidays(userName) {
+    const years = [new Date().getFullYear(), new Date().getFullYear()+1];
+    let changed = false;
+    years.forEach(yr => {
+      MANDATORY_HOLIDAYS.forEach(h => {
+        const dk = yr+'-'+String(h.month).padStart(2,'0')+'-'+String(h.day).padStart(2,'0');
+        if (!statusCache[dk] || statusCache[dk].mandatory !== true) {
+          statusCache[dk] = { status:'Mandatory Off', name:h.name, date:dk, mandatory:true, updatedAt:nowUTC() };
+          changed = true;
+        }
+      });
+    });
+    if (changed) safeSaveObj('dtr_status2', statusCache);
+  }
+
+  function isMandatoryOff(dk) {
+    return !!(statusCache[dk] && statusCache[dk].mandatory === true);
+  }
+
 
   async function flushQueue() {
     const q2 = safeLoad('dtr_spq2', []); if (!q2.length) return;

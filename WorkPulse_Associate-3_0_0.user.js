@@ -5,7 +5,6 @@
 // @description  WorkPulse — SSO, role-based access (Associate/Admin/SuperAdmin), SP direct sync
 // @author       WorkPulse Team
 // @match        https://share.amazon.com/Pages/default.aspx
-// @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
@@ -116,6 +115,7 @@
   let attMultiSelect = new Set();
   // Admin state
   let adminWeekOffset   = 0;
+  let admSelectedAssocs = new Set(); // multi-select for team tracker
   let teamStatusCache_adm = safeLoadObj('dtr_teamcache',{});
   let nptAllCache       = safeLoad('dtr_npt2',[]);
   let adminTkCustomCols = safeLoad('adm_tkcols',[]);
@@ -935,7 +935,11 @@
         const _dow = new Date(v+'T12:00:00').getDay();
         if (_dow === 0 || _dow === 6) { toast('Saturday & Sunday are mandatory off days', 'err'); break; }
         attDate = v;
-        attSelectedStatus = (statusCache[v]||{}).status||'';
+        const _saved = statusCache[v] || {};
+        // Strip sub-type suffix when restoring base status
+        attSelectedStatus = (_saved.status||'').split(' - ')[0];
+        attLeaveDay       = _saved.leaveDay  || '';
+        attLeaveHalf      = _saved.leaveHalf || '';
         // Highlight selected day card
         qa('.att-day-card').forEach(c => c.classList.toggle('att-day-selected', c.dataset.val === v));
         // Re-render only the edit panel (attSelectedStatus already set correctly above)
@@ -967,7 +971,14 @@
       case 'test-npt':       testNPTConnection(); break;
       case 'sync-my-data':   toast('Syncing your data from SP...','info'); fetchOwnAttendance(false); setTimeout(()=>fetchOwnTasks(false),1500); setTimeout(()=>fetchOwnNPT(false),3000); break;
       case 'flush-queue':   flushQueueManual(); break;
-      case 'adm-tk-clear':  { const n=q('#adm-tk-name'),a=q('#adm-tk-assoc'); if(n)n.value=''; if(a)a.value=''; renderAdminTeamTracker(); break; }
+      case 'adm-tk-clear':    { admSelectedAssocs.clear(); renderAdminTeamTracker(); break; }
+      case 'adm-assoc-clear': { admSelectedAssocs.clear(); renderAdminTeamTracker(); break; }
+      case 'adm-assoc-toggle': {
+        if (admSelectedAssocs.has(v)) admSelectedAssocs.delete(v);
+        else admSelectedAssocs.add(v);
+        renderAdminTeamTracker(); break;
+      }
+      case 'adm-assoc-remove': { admSelectedAssocs.delete(v); renderAdminTeamTracker(); break; }
       // Admin actions
       case 'adm-sync-all':   fetchAllAdminData(); break;
       case 'adm-sync-tasks': fetchAdminTasks(); break;
@@ -1676,7 +1687,10 @@
 
   function buildAttEditPanel(dk) {
     const existing = statusCache[dk] || {};
-    const selStatus = attSelectedStatus;
+    // Restore leave sub-type from saved entry
+    if (existing.leaveDay)  attLeaveDay  = existing.leaveDay;
+    if (existing.leaveHalf) attLeaveHalf = existing.leaveHalf;
+    const selStatus = attSelectedStatus || existing.status || '';
     // Use local date parts to avoid UTC offset issues
     const now   = new Date();
     const today = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
@@ -2457,12 +2471,13 @@
         onload: async res => {
           try {
             const results = (JSON.parse(res.responseText).d || {}).results || [];
+            // WorkStatus stores full status including sub-type e.g. "SL - Half AM"
             const body = {
               'Title':        title,
-              'EmployeeName': e.name     || '',
+              'EmployeeName': e.name      || '',
               'StatusDate':   spDate,
-              'WorkStatus':   e.status   || '',
-              'Shift':        e.shift    || '',
+              'WorkStatus':   e.status    || '',
+              'Shift':        e.shift     || '',
               'UpdatedAt':    e.updatedAt || nowUTC()
             };
             // Use dynamic list type (fetched once, cached)
@@ -2921,41 +2936,70 @@
 
   function renderAdminTeamTracker() {
     const el = q('#view-teamtrack'); if (!el) return;
-    const nameF = (q('#adm-tk-name')?.value||'').toLowerCase();
-    const typeF = q('#adm-tk-type')?.value||'';
-    const taskF = q('#adm-tk-task')?.value||'';
-    const sortF = q('#adm-tk-sort')?.value||'date';
+    const typeF = q('#adm-tk-type')?.value || '';
+    const taskF = q('#adm-tk-task')?.value || '';
+    const sortF = q('#adm-tk-sort')?.value || 'date';
     const subs  = Array.isArray(submissions) ? submissions : [];
+
+    // Multi-select filter: if any selected, filter to those associates
     let rows = subs
-      .filter(s => !nameF || (s.employeeName||'').toLowerCase().includes(nameF))
+      .filter(s => admSelectedAssocs.size === 0 || admSelectedAssocs.has((s.employeeName||'').toLowerCase()))
       .filter(s => !typeF || s.workType===typeF)
       .filter(s => !taskF || s.taskType===taskF);
-    if (sortF==='hours')    rows.sort((a,b)=>parseFloat(b.hours||0)-parseFloat(a.hours||0));
+    if (sortF==='hours')     rows.sort((a,b)=>parseFloat(b.hours||0)-parseFloat(a.hours||0));
     else if (sortF==='name') rows.sort((a,b)=>(a.employeeName||'').localeCompare(b.employeeName||''));
-    else                    rows.sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+    else                     rows.sort((a,b)=>(b.date||'').localeCompare(a.date||''));
     const totalH = rows.reduce((a,r)=>a+parseFloat(r.hours||0),0);
     const nptH   = rows.reduce((a,r)=>a+parseFloat(r.npt||0),0);
+
+    // Build selected chips
+    const selectedChips = admSelectedAssocs.size > 0
+      ? [...admSelectedAssocs].map(n =>
+          '<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 12px;border-radius:20px;background:var(--accent);color:#fff;font-size:.78rem;font-weight:700">' +
+          n + '<button data-action="adm-assoc-remove" data-val="' + n + '" style="background:none;border:none;color:#fff;cursor:pointer;font-size:11px;padding:0;line-height:1;opacity:.8">✕</button></span>'
+        ).join('')
+      : '';
+
+    // Associate picker chips — all associates as toggleable pills
+    const assocChips = ASSOCIATES.map(m => {
+      const ml  = m.toLowerCase();
+      const sel = admSelectedAssocs.has(ml);
+      return '<button data-action="adm-assoc-toggle" data-val="' + ml + '" style="padding:4px 11px;border-radius:20px;border:1px solid ' +
+        (sel ? 'var(--accent)' : 'var(--border)') + ';background:' +
+        (sel ? 'var(--accent)' : 'var(--bg3)') + ';color:' +
+        (sel ? '#fff' : 'var(--text2)') + ';font-size:.76rem;font-weight:' +
+        (sel ? '700' : '500') + ';cursor:pointer;font-family:inherit;white-space:nowrap">' + m + '</button>';
+    }).join('');
+
     el.innerHTML =
       '<div class="ph"><div class="ph-left"><div class="ph-title">Team Tracker</div>' +
-      '<div class="ph-sub">'+rows.length+' entries across '+getAllMembers().length+' members</div></div>' +
-      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-sync-tasks">'+ic.sync+' Sync</button></div></div>' +
-      '<div class="stats-grid sg4" style="margin-bottom:12px">' +
-      '<div class="stat-card ab"><div class="lbl">Entries</div><div class="val">'+rows.length+'</div></div>' +
-      '<div class="stat-card gb"><div class="lbl">Total Hours</div><div class="val">'+totalH.toFixed(1)+'h</div></div>' +
-      '<div class="stat-card amb"><div class="lbl">NPT Hours</div><div class="val">'+nptH.toFixed(1)+'h</div></div>' +
-      '<div class="stat-card pb"><div class="lbl">Members</div><div class="val">'+getAllMembers().length+'</div></div></div>' +
-      '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">' +
-      '<select id="adm-tk-assoc" class="dtr-select" style="min-width:180px">'+
-      '<option value="">👥 All Associates</option>'+
-      ASSOCIATES.map(m=>'<option value="'+m.toLowerCase()+'"'+(nameF===m.toLowerCase()?' selected':'')+'>'+m+'</option>').join('')+
-      '</select>'+
-      '<input id="adm-tk-name" class="dtr-input" placeholder="Search login..." style="max-width:140px" value="'+(nameF||'')+'">'+
+      '<div class="ph-sub">' + rows.length + ' entries · ' +
+      (admSelectedAssocs.size > 0 ? admSelectedAssocs.size + ' associate(s) selected' : 'all ' + getAllMembers().length + ' members') +
+      '</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-sync-tasks">' + ic.sync + ' Sync</button></div></div>' +
 
-      '<select id="adm-tk-type" class="dtr-select" style="max-width:140px"><option value="">All Work Types</option><option value="Productive"'+(typeF==='Productive'?' selected':'')+'>Productive</option><option value="NPT"'+(typeF==='NPT'?' selected':'')+'>NPT</option></select>'+
-      '<select id="adm-tk-task" class="dtr-select" style="max-width:160px"><option value="">All Task Types</option>'+TASK_TYPES.map(t=>'<option value="'+t+'"'+(taskF===t?' selected':'')+'>'+t+'</option>').join('')+'</select>'+
-      '<select id="adm-tk-sort" class="dtr-select" style="max-width:130px"><option value="date"'+(sortF==='date'?' selected':'')+'>Latest</option><option value="name"'+(sortF==='name'?' selected':'')+'>By Name</option><option value="hours"'+(sortF==='hours'?' selected':'')+'>By Hours</option></select>'+
-      (nameF?'<button class="btn btn-ghost btn-xs" data-action="adm-tk-clear">✕ Clear</button>':'')+
-      '</div>'+
+      '<div class="stats-grid sg4" style="margin-bottom:12px">' +
+      '<div class="stat-card ab"><div class="lbl">Entries</div><div class="val">' + rows.length + '</div></div>' +
+      '<div class="stat-card gb"><div class="lbl">Total Hours</div><div class="val">' + totalH.toFixed(1) + 'h</div></div>' +
+      '<div class="stat-card amb"><div class="lbl">NPT Hours</div><div class="val">' + nptH.toFixed(1) + 'h</div></div>' +
+      '<div class="stat-card pb"><div class="lbl">Members</div><div class="val">' + getAllMembers().length + '</div></div></div>' +
+
+      // Associate multi-select chip picker
+      '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">' +
+      '<span style="font-size:.76rem;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--text3)">Filter by Associate</span>' +
+      (admSelectedAssocs.size > 0 ? '<button data-action="adm-assoc-clear" style="font-size:.72rem;color:var(--red);background:none;border:none;cursor:pointer;font-family:inherit;font-weight:600">✕ Clear All</button>' : '') +
+      '</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:5px">' + assocChips + '</div>' +
+      (admSelectedAssocs.size > 0 ? '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:5px">' + selectedChips + '</div>' : '') +
+      '</div>' +
+
+      // Other filters row
+      '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">' +
+      '<select id="adm-tk-type" class="dtr-select" style="max-width:150px"><option value="">All Work Types</option><option value="Productive"' + (typeF==='Productive'?' selected':'') + '>Productive</option><option value="NPT"' + (typeF==='NPT'?' selected':'') + '>NPT</option></select>' +
+      '<select id="adm-tk-task" class="dtr-select" style="max-width:170px"><option value="">All Task Types</option>' + TASK_TYPES.map(t=>'<option value="'+t+'"'+(taskF===t?' selected':'')+'>'+t+'</option>').join('') + '</select>' +
+      '<select id="adm-tk-sort" class="dtr-select" style="max-width:130px"><option value="date"' + (sortF==='date'?' selected':'') + '>Latest</option><option value="name"' + (sortF==='name'?' selected':'') + '>By Name</option><option value="hours"' + (sortF==='hours'?' selected':'') + '>By Hours</option></select>' +
+      '</div>' +
       '<div class="tbl-wrap"><table class="dtr-table"><thead><tr>' +
       '<th>#</th><th>Date</th><th>Employee</th><th>Task Type</th><th>Work Type</th><th>Hours</th><th>NPT Hrs</th><th>Shift</th><th>Notes</th><th>Submitted</th>' +
       '</tr></thead><tbody>' +
@@ -2972,26 +3016,10 @@
         '<tr><td colspan="10"><div class="empty"><p>No entries. Sync from SP or check filters.</p></div></td></tr>') +
       '</tbody></table></div>';
 
-    // Wire filters
-    ['#adm-tk-name','#adm-tk-assoc','#adm-tk-type','#adm-tk-task','#adm-tk-sort'].forEach(sel=>{
-      const inp=el.querySelector(sel);
-      if (inp) {
-        inp.addEventListener(sel==='#adm-tk-name'?'input':'change', () => {
-          // Sync: assoc dropdown → name input and vice versa
-          if (sel === '#adm-tk-assoc') {
-            const nInp = el.querySelector('#adm-tk-name');
-            if (nInp) nInp.value = inp.value; // already lowercase from option values
-          } else if (sel === '#adm-tk-name') {
-            const aInp = el.querySelector('#adm-tk-assoc');
-            if (aInp) { // try to match dropdown
-              const typed = inp.value.toLowerCase();
-              const match = Array.from(aInp.options).find(o => o.value === typed);
-              if (match) aInp.value = typed; else aInp.value = '';
-            }
-          }
-          renderAdminTeamTracker();
-        });
-      }
+    // Wire remaining filter dropdowns (type/task/sort)
+    ['#adm-tk-type','#adm-tk-task','#adm-tk-sort'].forEach(sel => {
+      const inp = el.querySelector(sel);
+      if (inp) inp.addEventListener('change', () => renderAdminTeamTracker());
     });
   }
 

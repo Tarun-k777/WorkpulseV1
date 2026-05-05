@@ -47,7 +47,7 @@
     'Power Outage','Network Issue','Admin Task','Other'
   ];
   let nptActiveType = '';
-  const STATUSES   = ['WFO','WFH','SL','CL','AL','Optional Off'];
+  const STATUSES   = ['WFO','WFH','SL','CL','AL'];
   // ── Authorised users ──────────────────────────────────────────────────
   const ASSOCIATES = [
     'Ameralih','Bhurak','Pmred','Harikavr','Zshahnaz',
@@ -74,7 +74,6 @@
     SL:  { label:'Sick Leave',       cls:'sp-sl',  color:'#f85149', bg:'rgba(248,81,73,.14)'  },
     CL:  { label:'Casual Leave',     cls:'sp-cl',  color:'#d29922', bg:'rgba(210,153,34,.14)' },
     AL:  { label:'Annual Leave',     cls:'sp-al',  color:'#a371f7', bg:'rgba(163,113,247,.14)'},
-    'Optional Off':{ label:'Optional Off', cls:'sp-oo', color:'#6b7280', bg:'rgba(107,114,128,.14)'},
   };
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -953,7 +952,9 @@
         if (box) { const shown = box.style.display==='block'; box.style.display=shown?'none':'block'; if(lbl) lbl.textContent=shown?'Add optional note':'Hide note'; }
         break;
       }
-      case 'att-status':    attSelectStatus(v); break;
+      case 'att-status':      attSelectStatus(v); break;
+      case 'att-leave-day':   attSelectLeaveDay(v); break;
+      case 'att-leave-half':  attSelectLeaveHalf(v); break;
       case 'att-save':      attSave(); break;
       case 'cal-sync':      toast('Loading your attendance...','info'); fetchOwnAttendance(false); break;
       case 'cal-prev':      calMonthOffset--; renderMyCalendar(); break;
@@ -1038,11 +1039,11 @@
       '<div class="dtr-field"><label class="dtr-label">Task Type</label><select class="dtr-select dtr-tt"><option value="">Select</option>' + opts + '<option value="Leave">Leave Day</option></select></div>' +
       '<div class="dtr-field"><label class="dtr-label">Work Type</label><select class="dtr-select dtr-wtype"><option value="Productive">Productive</option><option value="NPT">NPT</option></select></div>' +
       '<div class="dtr-field"><label class="dtr-label">Minutes <span style="font-size:.71rem;color:var(--text3)">(max 480)</span></label><input type="number" class="dtr-input dtr-hrs" min="0" max="480" step="1" placeholder="e.g. 240"></div>' +
-      '<div class="dtr-field"><label class="dtr-label">NPT Hours</label><div class="npt-box">—</div></div></div>' +
+      '<div class="dtr-field"><label class="dtr-label">NPT Mins</label><div class="npt-box">—</div></div></div>' +
       '<div class="comments-box" id="req-comment-' + n + '"><div class="dtr-field" style="margin-top:4px"><label class="dtr-label dtr-comment-label">Comments <span class="req-star">*</span></label><textarea class="dtr-input dtr-adhoc" rows="2" placeholder="Add details..." style="resize:vertical;min-height:52px"></textarea></div></div>' +'<div class="opt-note-toggle" data-action="toggle-note" data-n="' + n + '">📝 <span class="opt-note-lbl">Add optional note</span></div><div class="opt-note-box" id="opt-note-' + n + '" style="display:none"><div class="dtr-field" style="margin-top:6px"><label class="dtr-label">Note <span style="color:var(--text3);font-weight:400">(optional)</span></label><textarea class="dtr-input dtr-note" rows="2" placeholder="Any additional context..." style="resize:vertical;min-height:48px"></textarea></div></div>' +
       '<div class="leave-tag"><span>Leave:</span>' +
-      '<button class="leave-type-btn active" data-action="leave-type" data-val="full">Full Day (8h)</button>' +
-      '<button class="leave-type-btn" data-action="leave-type" data-val="half-am">Half AM (4h)</button>' +
+      '<button class="leave-type-btn active" data-action="leave-type" data-val="full">Full Day (480 min)</button>' +
+      '<button class="leave-type-btn" data-action="leave-type" data-val="half-am">Half Day (240 min)</button>' +
       '<button class="leave-type-btn" data-action="leave-type" data-val="half-pm">Half PM (4h)</button>' +
       '<span class="leave-hours-display" style="margin-left:auto;font-family:var(--mono);font-weight:700">8.0h</span></div></div>';
   }
@@ -1079,8 +1080,8 @@
     const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = isNPT ? 'NPT' : 'Productive';
     recalcNPT(); updateDayViz();
   }
-  function makeLeave(card) { if (!card) return; card.classList.add('leave'); card.querySelector('.leave-tag').classList.add('show'); const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = 'NPT'; const hi = card.querySelector('.dtr-hrs'); if (hi) hi.value = '480'; const nb = card.querySelector('.npt-box'); if (nb) { nb.textContent = '480 NPT mins (full day)'; nb.className = 'npt-box'; } const ts = card.querySelector('.dtr-tt'); if (ts) ts.value = 'Leave'; updateDayViz(); }
-  function setLeaveType(card, type) { if (!card) return; card.querySelectorAll('.leave-type-btn').forEach(b => b.classList.toggle('active', b.dataset.val === type)); const h = type === 'full' ? 8 : 4; const ld = card.querySelector('.leave-hours-display'); if (ld) ld.textContent = h + '.0h'; const nb = card.querySelector('.npt-box'); if (nb) nb.textContent = h + '.0h NPT'; updateDayViz(); }
+  function makeLeave(card) { if (!card) return; card.classList.add('leave'); card.querySelector('.leave-tag').classList.add('show'); const ws = card.querySelector('.dtr-wtype'); if (ws) ws.value = 'NPT'; const hi = card.querySelector('.dtr-hrs'); if (hi) hi.value = '480'; const nb = card.querySelector('.npt-box'); if (nb) { nb.textContent = '480 min NPT (full day)'; nb.className = 'npt-box'; } const ts = card.querySelector('.dtr-tt'); if (ts) ts.value = 'Leave'; updateDayViz(); }
+  function setLeaveType(card, type) { if (!card) return; card.querySelectorAll('.leave-type-btn').forEach(b => b.classList.toggle('active', b.dataset.val === type)); const m = type === 'full' ? 480 : 240; const ld = card.querySelector('.leave-hours-display'); if (ld) { ld.textContent = m + ' min'; } const nb = card.querySelector('.npt-box'); if (nb) nb.textContent = m + ' min NPT'; updateDayViz(); }
   function recalcNPT() {
     // Validate total doesn't exceed 480 mins
     let totalMins = 0;
@@ -1102,10 +1103,10 @@
       if (mins === 0) { nb.textContent='—'; nb.className='npt-box'; return; }
       if (wt === 'Productive') {
         const npt = Math.max(0, WH - mins);
-        nb.textContent = npt + ' NPT mins';
+        nb.textContent = npt + ' min';
         nb.className = 'npt-box prod';
       } else {
-        nb.textContent = mins + ' NPT mins';
+        nb.textContent = mins + ' min';
         nb.className = 'npt-box';
       }
     });
@@ -1308,7 +1309,7 @@
       taskType: s.taskType || '',
       workType: s.workType || 'Productive',
       hours:    (s.hours||0).toFixed(1),
-      nptHours: (s.npt||0).toFixed(1),
+      nptHours: Math.round((s.npt||0)*60) + ' m',
       leave:    s.taskType === 'Leave' ? '✓' : '',
       adhoc:    s.adhoc || '',
       submittedAt: s.submittedAt ? s.submittedAt.replace('T',' ').slice(0,16) : '',
@@ -1324,8 +1325,8 @@
       {key:'employee',   label:'Employee'},
       {key:'taskType',   label:'Task Type'},
       {key:'workType',   label:'Work Type'},
-      {key:'hours',      label:'Hours'},
-      {key:'nptHours',   label:'NPT Hours'},
+      {key:'hours',      label:'Mins'},
+      {key:'nptHours',   label:'NPT Mins'},
       {key:'leave',      label:'Leave'},
       {key:'adhoc',      label:'Comments / Ad-hoc'},
       {key:'submittedAt',label:'Submitted At'},
@@ -1462,7 +1463,10 @@
   }
 
   // MARK ATTENDANCE
-  let attSelectedStatus = '';
+  let attSelectedStatus  = '';
+  let attLeaveDay        = '';   // 'full' | 'half'
+  let attLeaveHalf       = '';   // 'AM' | 'PM' (only when attLeaveDay==='half')
+  const LEAVE_STATUSES   = ['SL','CL','AL']; // statuses that need full/half choice
 
   // ── MARK ATTENDANCE — weekly grid UI, any date editable ──────────────
 
@@ -1644,6 +1648,7 @@
     // Reset bulk mode immediately (instant feel)
     attMultiSelect.clear();
     attBulkMode = false;
+    attLeaveDay = ''; attLeaveHalf = '';
     const toggleBtn = q('[data-action="att-toggle-bulk"]');
     if (toggleBtn) { toggleBtn.textContent = '☑ Multi-select'; toggleBtn.classList.remove('on'); }
     qa('.att-day-card').forEach(c => { c.dataset.action = 'att-pick-day'; });
@@ -1699,6 +1704,9 @@
           '<div class="status-tile-label">' + s + '</div>' +
           '<div class="status-tile-sub">' + cfg.label + '</div></div>';
       }).join('') + '</div>' +
+      // Leave sub-type panel — shown inline for SL/CL/AL
+      '<div id="att-leave-panel" style="display:' + (LEAVE_STATUSES.includes(selStatus)?'block':'none') + ';margin-bottom:2px">' +
+      (LEAVE_STATUSES.includes(selStatus) ? _buildLeaveDayPanel(selStatus, STATUS_CFG[selStatus]||{}) : '') + '</div>' +
       '<div class="dtr-field" style="margin-bottom:14px">' +
       '<label class="dtr-label">Shift Timing</label>' +
       '<select class="dtr-select" id="att-shift" style="max-width:220px">' +
@@ -1715,20 +1723,43 @@
 
   function attSelectStatus(status) {
     attSelectedStatus = status;
+    attLeaveDay  = '';
+    attLeaveHalf = '';
     const cfg = STATUS_CFG[status] || {};
+
     // Update tile highlights — pure DOM, no rebuild
     qa('#att-status-grid .status-tile').forEach(tile => {
-      const s = tile.dataset.val;
+      const s    = tile.dataset.val;
       const tcfg = STATUS_CFG[s] || {};
       const isSel = (s === status);
       tile.classList.toggle('selected', isSel);
       tile.style.borderColor = isSel ? tcfg.color : 'var(--border)';
       tile.style.background  = isSel ? tcfg.bg    : 'var(--bg2)';
     });
-    // Enable save button
+
+    // Show leave sub-type panel for SL/CL/AL — inline below status grid
+    const leavePanel = q('#att-leave-panel');
+    if (leavePanel) {
+      if (LEAVE_STATUSES.includes(status)) {
+        leavePanel.style.display = 'block';
+        leavePanel.innerHTML = _buildLeaveDayPanel(status, cfg);
+      } else {
+        leavePanel.style.display = 'none';
+        leavePanel.innerHTML = '';
+      }
+    }
+
+    // For non-leave statuses: enable save immediately
+    // For leave statuses: save button stays disabled until full/half chosen
     const saveBtn = q('#att-save-btn');
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.removeAttribute('disabled'); }
-    // Update day card dot color live
+    if (saveBtn) {
+      const needsChoice = LEAVE_STATUSES.includes(status);
+      saveBtn.disabled = needsChoice;
+      if (needsChoice) saveBtn.setAttribute('disabled','');
+      else saveBtn.removeAttribute('disabled');
+    }
+
+    // Live update day card
     qa('.att-day-card').forEach(card => {
       if (card.dataset.val === attDate) {
         const dotEl = card.querySelector('.att-day-dot');
@@ -1740,20 +1771,106 @@
     });
   }
 
+  // Build the inline full/half day selection panel (no popup)
+  function _buildLeaveDayPanel(status, cfg) {
+    const color = cfg.color || 'var(--accent)';
+    const bg    = cfg.bg    || 'var(--bg3)';
+    return (
+      '<div style="margin-top:10px;padding:12px 14px;border-radius:10px;border:1px solid ' + color + '30;background:' + bg + ';animation:fadeIn .15s">' +
+      '<div style="font-size:.8rem;font-weight:700;color:' + color + ';margin-bottom:10px;letter-spacing:.3px">' + status + ' — Select Duration</div>' +
+
+      // Full / Half row
+      '<div style="display:flex;gap:8px;margin-bottom:8px">' +
+
+      // Full Day button
+      '<button id="ldBtn-full" data-action="att-leave-day" data-val="full" style="flex:1;padding:9px 6px;border-radius:8px;border:2px solid ' +
+        (attLeaveDay==='full' ? color : 'var(--border)') + ';background:' +
+        (attLeaveDay==='full' ? bg : 'var(--bg2)') + ';color:' +
+        (attLeaveDay==='full' ? color : 'var(--text2)') + ';font-size:.82rem;font-weight:700;cursor:pointer;font-family:inherit;transition:all .1s">' +
+        '📅 Full Day</button>' +
+
+      // Half Day button
+      '<button id="ldBtn-half" data-action="att-leave-day" data-val="half" style="flex:1;padding:9px 6px;border-radius:8px;border:2px solid ' +
+        (attLeaveDay==='half' ? color : 'var(--border)') + ';background:' +
+        (attLeaveDay==='half' ? bg : 'var(--bg2)') + ';color:' +
+        (attLeaveDay==='half' ? color : 'var(--text2)') + ';font-size:.82rem;font-weight:700;cursor:pointer;font-family:inherit;transition:all .1s">' +
+        '⏰ Half Day</button>' +
+
+      '</div>' +
+
+      // AM / PM row — only shown when half is selected
+      (attLeaveDay === 'half' ?
+        '<div style="display:flex;gap:8px;margin-top:4px">' +
+        '<button id="ldBtn-AM" data-action="att-leave-half" data-val="AM" style="flex:1;padding:8px 6px;border-radius:8px;border:2px solid ' +
+          (attLeaveHalf==='AM' ? color : 'var(--border)') + ';background:' +
+          (attLeaveHalf==='AM' ? bg : 'var(--bg2)') + ';color:' +
+          (attLeaveHalf==='AM' ? color : 'var(--text3)') + ';font-size:.79rem;font-weight:600;cursor:pointer;font-family:inherit">' +
+          '🌅 First Half (Morning)</button>' +
+        '<button id="ldBtn-PM" data-action="att-leave-half" data-val="PM" style="flex:1;padding:8px 6px;border-radius:8px;border:2px solid ' +
+          (attLeaveHalf==='PM' ? color : 'var(--border)') + ';background:' +
+          (attLeaveHalf==='PM' ? bg : 'var(--bg2)') + ';color:' +
+          (attLeaveHalf==='PM' ? color : 'var(--text3)') + ';font-size:.79rem;font-weight:600;cursor:pointer;font-family:inherit">' +
+          '🌆 Second Half (Afternoon)</button>' +
+        '</div>' : '') +
+
+      '</div>'
+    );
+  }
+
+  // Handle Full/Half Day selection
+  function attSelectLeaveDay(val) {
+    attLeaveDay  = val;
+    attLeaveHalf = '';
+    const cfg = STATUS_CFG[attSelectedStatus] || {};
+    // Rebuild just the leave panel
+    const leavePanel = q('#att-leave-panel');
+    if (leavePanel) leavePanel.innerHTML = _buildLeaveDayPanel(attSelectedStatus, cfg);
+    // Enable/disable save: full day → can save; half → still need AM/PM
+    const saveBtn = q('#att-save-btn');
+    if (saveBtn) {
+      const needsHalf = val === 'half';
+      saveBtn.disabled = needsHalf;
+      if (needsHalf) saveBtn.setAttribute('disabled','');
+      else           saveBtn.removeAttribute('disabled');
+    }
+  }
+
+  // Handle AM/PM selection
+  function attSelectLeaveHalf(val) {
+    attLeaveHalf = val;
+    const cfg = STATUS_CFG[attSelectedStatus] || {};
+    const leavePanel = q('#att-leave-panel');
+    if (leavePanel) leavePanel.innerHTML = _buildLeaveDayPanel(attSelectedStatus, cfg);
+    // Now can save
+    const saveBtn = q('#att-save-btn');
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.removeAttribute('disabled'); }
+  }
+
+  // Compute final status label including sub-type
+  // e.g. "SL (Full Day)" or "CL (Half - AM)"
+  function getEffectiveStatus() {
+    if (!LEAVE_STATUSES.includes(attSelectedStatus)) return attSelectedStatus;
+    if (attLeaveDay === 'full')  return attSelectedStatus + ' - Full Day';
+    if (attLeaveDay === 'half' && attLeaveHalf) return attSelectedStatus + ' - Half ' + attLeaveHalf;
+    return attSelectedStatus;
+  }
+
   async function attSave() {
     if (!attSelectedStatus) { toast('Select a status first', 'err'); return; }
     const btn = q('[data-action="att-save"]');
     if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
     const shift = q('#att-shift')?.value || '';
-    const entry = { status: attSelectedStatus, process: '', task: '', shift, date: attDate, name: authState.name, updatedAt: nowUTC() };
+    const effectiveStatus = getEffectiveStatus();
+    const entry = { status: effectiveStatus, leaveDay: attLeaveDay, leaveHalf: attLeaveHalf, shift, date: attDate, name: authState.name, updatedAt: nowUTC() };
     statusCache[attDate] = entry;
     safeSaveObj('dtr_status2', statusCache);
-    teamStatusCache[authState.name + '::' + attDate] = { status: entry.status, process: '', task: '', shift };
+    teamStatusCache[authState.name + '::' + attDate] = { status: effectiveStatus, shift };
     safeSaveObj('dtr_teamcache', teamStatusCache);
     const sent = await postAttendance(entry);
     if (!sent) toast('Saved locally (SP sync pending)', 'info');
-    else toast('✅ Attendance saved — ' + attSelectedStatus, 'ok');
-    if (btn) { btn.disabled = false; btn.innerHTML = ic.check + ' Save — ' + (attDate === todayStr() ? 'Today' : attDate === yesterdayStr() ? 'Yesterday' : formatDay(attDate)); }
+    else toast('✅ Saved — ' + effectiveStatus, 'ok');
+    attLeaveDay = ''; attLeaveHalf = '';
+    if (btn) { btn.disabled = false; btn.innerHTML = ic.check + ' Save — ' + (attDate === todayStr() ? 'Today' : attDate === prevWorkingDayStr() ? 'Yesterday' : formatDay(attDate)); }
     // Update day card to show saved status
     qa('.att-day-card').forEach(card => {
       if (card.dataset.val === attDate) {
@@ -2828,11 +2945,12 @@
       '<div class="stat-card amb"><div class="lbl">NPT Hours</div><div class="val">'+nptH.toFixed(1)+'h</div></div>' +
       '<div class="stat-card pb"><div class="lbl">Members</div><div class="val">'+getAllMembers().length+'</div></div></div>' +
       '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">' +
-      '<input id="adm-tk-name" class="dtr-input" placeholder="Search name..." style="max-width:160px" value="'+(nameF||'')+'">'+
-      '<select id="adm-tk-assoc" class="dtr-select" style="max-width:160px">'+
-        '<option value="">All Associates</option>'+
-        getAllMembers().map(m=>'<option value="'+m+'"'+(nameF===m.toLowerCase()?' selected':'')+'>'+m+'</option>').join('')+
+      '<select id="adm-tk-assoc" class="dtr-select" style="min-width:180px">'+
+      '<option value="">👥 All Associates</option>'+
+      ASSOCIATES.map(m=>'<option value="'+m.toLowerCase()+'"'+(nameF===m.toLowerCase()?' selected':'')+'>'+m+'</option>').join('')+
       '</select>'+
+      '<input id="adm-tk-name" class="dtr-input" placeholder="Search login..." style="max-width:140px" value="'+(nameF||'')+'">'+
+
       '<select id="adm-tk-type" class="dtr-select" style="max-width:140px"><option value="">All Work Types</option><option value="Productive"'+(typeF==='Productive'?' selected':'')+'>Productive</option><option value="NPT"'+(typeF==='NPT'?' selected':'')+'>NPT</option></select>'+
       '<select id="adm-tk-task" class="dtr-select" style="max-width:160px"><option value="">All Task Types</option>'+TASK_TYPES.map(t=>'<option value="'+t+'"'+(taskF===t?' selected':'')+'>'+t+'</option>').join('')+'</select>'+
       '<select id="adm-tk-sort" class="dtr-select" style="max-width:130px"><option value="date"'+(sortF==='date'?' selected':'')+'>Latest</option><option value="name"'+(sortF==='name'?' selected':'')+'>By Name</option><option value="hours"'+(sortF==='hours'?' selected':'')+'>By Hours</option></select>'+
@@ -2859,10 +2977,17 @@
       const inp=el.querySelector(sel);
       if (inp) {
         inp.addEventListener(sel==='#adm-tk-name'?'input':'change', () => {
-          // Sync associate dropdown → name filter
+          // Sync: assoc dropdown → name input and vice versa
           if (sel === '#adm-tk-assoc') {
             const nInp = el.querySelector('#adm-tk-name');
-            if (nInp) nInp.value = inp.value.toLowerCase();
+            if (nInp) nInp.value = inp.value; // already lowercase from option values
+          } else if (sel === '#adm-tk-name') {
+            const aInp = el.querySelector('#adm-tk-assoc');
+            if (aInp) { // try to match dropdown
+              const typed = inp.value.toLowerCase();
+              const match = Array.from(aInp.options).find(o => o.value === typed);
+              if (match) aInp.value = typed; else aInp.value = '';
+            }
           }
           renderAdminTeamTracker();
         });

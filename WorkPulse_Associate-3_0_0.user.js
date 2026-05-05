@@ -1,17 +1,20 @@
 // ==UserScript==
-// @name         WorkPulse — Associate
+// @name         WorkPulse — Universal v4
 // @namespace    https://amazon.sharepoint.com/sites/teamdailytask/
-// @version      2.10.0
-// @description  WorkPulse — Associate productivity + attendance tracker
-// @author       Your Team
-// @match        https://amazon.sharepoint.com/sites/teamdailytask/*
+// @version      4.0.0
+// @description  WorkPulse — SSO, role-based access (Associate/Admin/SuperAdmin), SP direct sync
+// @author       WorkPulse Team
+// @match        https://share.amazon.com/*
+// @match        https://*.share.amazon.com/*
 // @match        https://amazon.sharepoint.com/*
+// @match        https://*.sharepoint.com/*
 // @match        https://www.grainger.com/*
 // @match        https://share.amazon.com/Pages/default.aspx
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
+// @connect      share.amazon.com
 // @connect      amazon.sharepoint.com
 // @connect      *.sharepoint.com
 // @connect      *
@@ -28,7 +31,7 @@
     SITE:        'https://amazon.sharepoint.com/sites/teamdailytask',
     TASK_LIST:   'DailyTaskReport',      // existing task list
     STATUS_LIST: 'AttendanceStatus',     // NEW: WFO/WFH/Leave tracking
-    NPT_LIST:    'NPTLog',               // NEW: Missed NPT log
+    NPT_LIST:    'NPT log',               // SharePoint list name (with space)
   };
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -41,8 +44,30 @@
     'Meeting','Ad-hoc Tasks','Other'
   ];
   const NPT_TASKS  = ['Lack of Work'];
+  const NPT_TYPES  = [
+    'System Issue','Meeting Overrun','Training','Lack of Work',
+    'Power Outage','Network Issue','Admin Task','Other'
+  ];
+  let nptActiveType = '';
   const STATUSES   = ['WFO','WFH','SL','CL','AL','Optional Off'];
-  const ASSOCIATES = ['Alekhyya','Ameralih','Anshdeep','Arvindon','Awaispsh','Bhanupru','Bhurak','Bsv','Dvsanjay','Edharapa','Gsridev','Haranbhe','Harikavr','Harusn','Heswitha','Hshyaraj','Inagajag','Joldapka','Kalakuh','Kenumula','Kuparima','Madhureg','Malsrira','Mbahyal','Meguvval','Mppunna','Pankae','Piyushts','Pmred','Psiranga','Rajawbab','Rayyanms','Remoch','Sheebyme','Siqmadhu','Sofiykja','Sundkraj','Tumkurs','Unairite','Varmana','Vpulluri','Zshahnaz']; // authorised logins
+  // ── Authorised users ──────────────────────────────────────────────────
+  const ASSOCIATES = [
+    'Ameralih','Bhurak','Pmred','Harikavr','Zshahnaz',
+    'Meguvval','Vpulluri','Piyushts','Kuparima','Unairite',
+    'Anshdeep','Gsridev','Arvindon','Psiranga','Varmana',
+    'Haranbhe','Kalakuh','Alekhyya','Pankae','Madhureg',
+    'Bsv','Heswitha','Mbahyal','Bhanupru','Harusn',
+    'Remoch','Siqmadhu','Sheebyme','Rajawbab','Inagajag',
+    'Malsrira','Edharapa','Hshyaraj','Sofiykja','Rayyanms',
+    'Awaispsh','Kenumula','Sundkraj','Dvsanjay','Tumkurs',
+    'Mppunna','Joldapka'
+  ]; // 42 associates
+
+  const ADMINS      = ['Tkattula','Chaturay','Shamils','Nkandhur','Sherylv']; // 5 admins
+  const SUPER_ADMIN = 'Tkattula'; // can access both admin + associate (Admin-tarun) views
+
+  // Runtime role — set after SSO/login
+  let currentRole = 'associate'; // 'associate' | 'admin'
   const PROCS      = ['Preprod Testing','Chat Transcripts','Adhoc','Quality Check','Training','Other'];
   const COLORS     = ['#6366f1','#8b5cf6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#84cc16'];
   const STATUS_CFG = {
@@ -83,10 +108,21 @@
     ? {loggedIn:true,name:currentSession.name,sid:currentSession.sid}
     : {loggedIn:false,name:'',sid:''};
 
-  let currentView  = '';
-  let taskCounter  = 1;
-  let selectedDate = todayStr();
-  let weekOffset   = 0;   // for My Week View
+  let currentView    = '';
+  let taskCounter    = 1;
+  let selectedDate   = todayStr();
+  let weekOffset     = 0;
+  let attWeekOffset  = 0;
+  let calMonthOffset = 0;
+  let attDate        = todayStr();
+  let attBulkMode    = false;
+  let attMultiSelect = new Set();
+  // Admin state
+  let adminWeekOffset   = 0;
+  let teamStatusCache_adm = safeLoadObj('dtr_teamcache',{});
+  let nptAllCache       = safeLoad('dtr_npt2',[]);
+  let adminTkCustomCols = safeLoad('adm_tkcols',[]);
+  let _listTypes        = { task:'', npt:'', att:'' };
   let root;
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -446,15 +482,25 @@
     att:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>`,
   };
 
-  const TABS = [
-    { id:'submit',    label:'Submit Tasks',    icon:ic.submit,   group:'Task Reporter' },
-    { id:'analytics', label:'My Analytics',    icon:ic.chart,    group:'Task Reporter' },
-    { id:'tracker',   label:'My Tracker',      icon:ic.tracker,  group:'Task Reporter' },
-    { id:'mark',      label:'Mark Attendance', icon:ic.mark,     group:'Attendance'    },
-    { id:'calendar',  label:'My Calendar',     icon:ic.att,      group:'Attendance'    },
-    { id:'missednpt', label:'Missed NPT',      icon:ic.npt,      group:'Attendance'    },
-    { id:'settings',  label:'Settings',        icon:ic.settings, group:'Settings'      },
+  // Associate tabs
+  const ASSOC_TABS = [
+    { id:'submit',    label:'Submit Tasks',     icon:ic.submit,   group:'Reporter'    },
+    { id:'analytics', label:'My Analytics',     icon:ic.chart,    group:'Reporter'    },
+    { id:'tracker',   label:'My Tracker',       icon:ic.tracker,  group:'Reporter'    },
+    { id:'weekly',    label:'Weekly Calendar',  icon:ic.mark,     group:'Attendance'  },
+    { id:'calendar',  label:'My Calendar',      icon:ic.att,      group:'Attendance'  },
+    { id:'missednpt', label:'Missed NPT',       icon:ic.npt,      group:'Attendance'  },
+    { id:'settings',  label:'Settings',         icon:ic.settings, group:'Settings'    },
   ];
+  // Admin tabs
+  const ADMIN_TABS = [
+    { id:'overview',  label:'Overview',      icon:ic.chart,    group:'Dashboard'   },
+    { id:'teamtrack', label:'Team Tracker',  icon:ic.tracker,  group:'Dashboard'   },
+    { id:'attweek',   label:'Week View',     icon:ic.att,      group:'Attendance'  },
+    { id:'attnpt',    label:'NPT Log',       icon:ic.npt,      group:'Attendance'  },
+    { id:'settings',  label:'Settings',      icon:ic.settings, group:'Settings'    },
+  ];
+  const TABS = ASSOC_TABS; // default — switched by buildApp per role
 
   function boot() {
     const ex = document.getElementById('dtr-root'); if (ex) ex.remove();
@@ -467,7 +513,7 @@
     root.addEventListener('input', handleInput);
     root.addEventListener('change', handleChange);
     root.addEventListener('keydown', handleKeydown);
-    if (window.location.hostname.includes('sharepoint.com')) setTimeout(flushQueue, 2000);
+    setTimeout(flushQueue, 3000); // flush queued items on every page
     teamStatusCache = safeLoadObj('dtr_teamcache', {});
     if (authState.loggedIn) {
       buildApp();
@@ -483,73 +529,275 @@
   const q  = sel => root.querySelector(sel);
   const qa = sel => root.querySelectorAll(sel);
 
-  function renderLogin() {
-    // Build options from ASSOCIATES array dynamically
-    const opts = '<option value="">— Select your login —</option>' +
-      ASSOCIATES.map(a => '<option value="' + a + '">' + a + '</option>').join('');
+  // ── SSO detection ────────────────────────────────────────────────────
+  function detectSSOUser() {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: SP.SITE + '/_api/web/currentuser',
+        headers: { 'Accept': 'application/json;odata=verbose' },
+        withCredentials: true,
+        onload: res => {
+          try {
+            const d = JSON.parse(res.responseText).d;
+            resolve({ displayName: d.Title||'', email: d.Email||'', loginName: d.LoginName||'' });
+          } catch { reject(new Error('parse failed')); }
+        },
+        onerror: () => reject(new Error('network error'))
+      });
+    });
+  }
 
+  function resolveRole(displayName, email) {
+    const dn  = (displayName || '').toLowerCase().trim();
+    const pfx = (email || '').split('@')[0].toLowerCase().trim();
+    // Check admins first — strict exact match
+    const adminHit = ADMINS.find(a => {
+      const al = a.toLowerCase();
+      return al === dn || al === pfx || dn.startsWith(al) || pfx.startsWith(al);
+    });
+    if (adminHit) return { name: adminHit, role: 'admin' };
+    // Check associates
+    const assocHit = ASSOCIATES.find(a => {
+      const al = a.toLowerCase();
+      return al === dn || al === pfx || dn.startsWith(al) || pfx.startsWith(al);
+    });
+    if (assocHit) {
+      if (!ADMINS.find(a => a.toLowerCase() === assocHit.toLowerCase()))
+        return { name: assocHit, role: 'associate' };
+    }
+    return null;
+  }
+
+  function renderLogin() {
     root.innerHTML =
-      '<div id="view-login" style="display:flex;align-items:center;justify-content:center;min-height:100%">' +
-      '<div class="login-card">' +
-      '<div class="login-logo">' + ic.logo + '</div>' +
-      '<div class="login-title">WorkPulse</div>' +
-      '<div class="login-sub">Select your login to start</div>' +
-      '<div class="login-err" id="login-err" style="color:var(--red);font-size:.875rem;margin-bottom:10px;min-height:18px"></div>' +
-      '<div class="dtr-field">' +
-      '<label class="dtr-label">Your Login</label>' +
-      '<select id="login-name" class="dtr-select" style="font-size:1rem;padding:10px 12px">' + opts + '</select>' +
+      '<div id="view-login" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#080c14 0%,#12103a 50%,#080c14 100%);overflow:hidden">' +
+      '<div style="position:absolute;width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,rgba(99,102,241,.12),transparent 70%);top:-120px;right:-100px;pointer-events:none"></div>' +
+      '<div style="position:absolute;width:400px;height:400px;border-radius:50%;background:radial-gradient(circle,rgba(163,113,247,.08),transparent 70%);bottom:-100px;left:-80px;pointer-events:none"></div>' +
+      '<div style="position:relative;z-index:1;width:420px;max-width:92vw;background:rgba(255,255,255,.035);backdrop-filter:blur(32px);border:1px solid rgba(255,255,255,.07);border-radius:20px;padding:40px 36px 36px;box-shadow:0 32px 64px rgba(0,0,0,.5)">' +
+        // Logo + title
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:28px">' +
+          '<div style="width:54px;height:54px;border-radius:16px;background:linear-gradient(135deg,#58a6ff,#a371f7);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(99,102,241,.35)">' + ic.logo + '</div>' +
+          '<div style="text-align:center">' +
+            '<div style="font-size:24px;font-weight:800;color:#fff;letter-spacing:-.5px">WorkPulse</div>' +
+            '<div style="font-size:12px;color:rgba(255,255,255,.3);margin-top:3px">Associate Portal — Secure Access</div>' +
+          '</div>' +
+        '</div>' +
+        // SSO spinner
+        '<div id="sso-detecting" style="text-align:center;padding:18px 0">' +
+          '<div style="display:inline-flex;align-items:center;gap:10px;color:rgba(255,255,255,.4);font-size:13px">' +
+            '<svg id="sso-spin" style="width:18px;height:18px;flex-shrink:0" viewBox="0 0 24 24" fill="none">' +
+              '<circle cx="12" cy="12" r="9" stroke="rgba(255,255,255,.1)" stroke-width="2"/>' +
+              '<path d="M12 3a9 9 0 0 1 9 9" stroke="#a371f7" stroke-width="2" stroke-linecap="round"/>' +
+            '</svg>' +
+            'Detecting your identity via SharePoint SSO...' +
+          '</div>' +
+        '</div>' +
+        '<div id="sso-result" style="display:none"></div>' +
+        // Manual fallback — plain text input, no dropdown
+        '<div id="sso-manual" style="display:none">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin:4px 0 18px;color:rgba(255,255,255,.18);font-size:10px;text-transform:uppercase;letter-spacing:1.5px;font-weight:600">' +
+            '<div style="flex:1;height:1px;background:rgba(255,255,255,.06)"></div>Manual Login<div style="flex:1;height:1px;background:rgba(255,255,255,.06)"></div>' +
+          '</div>' +
+          '<input id="login-name" type="text" autocomplete="off" spellcheck="false" placeholder="Enter your login name (e.g. Bhurak)" style="width:100%;padding:12px 14px;border-radius:10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:#fff;font-size:.9rem;font-family:inherit;outline:none;margin-bottom:10px;-webkit-text-fill-color:#fff">' +
+          '<div id="login-err" style="color:#f85149;font-size:.82rem;margin-bottom:10px;min-height:16px;text-align:center"></div>' +
+          '<button data-action="do-login" style="width:100%;padding:13px;border:none;border-radius:10px;background:linear-gradient(135deg,#58a6ff,#a371f7);color:#fff;font-size:.9rem;font-weight:700;cursor:pointer;font-family:inherit">→ Continue</button>' +
+          '<div style="margin-top:10px;font-size:.72rem;color:rgba(255,255,255,.2);text-align:center">Only authorised logins accepted</div>' +
+        '</div>' +
       '</div>' +
-      '<button class="btn btn-primary btn-full" data-action="do-login" style="margin-top:8px;padding:12px;font-size:1rem">' +
-      ic.submit + ' Start Session' +
-      '</button>' +
-      '</div></div>' +
+      '</div>' +
       '<div id="dtr-toast"></div>';
 
-    // Pre-select if session exists (returning user)
-    const saved = loadSession();
-    if (saved && saved.name) {
-      const sel = q('#login-name');
-      if (sel) sel.value = saved.name;
+    // Spinner animation
+    const spinEl = root.querySelector('#sso-spin');
+    if (spinEl) {
+      let angle = 0;
+      const si = setInterval(() => {
+        if (!root.querySelector('#sso-spin')) { clearInterval(si); return; }
+        angle = (angle + 8) % 360;
+        spinEl.style.transform = 'rotate(' + angle + 'deg)';
+      }, 30);
     }
-    setTimeout(() => { const e = q('#login-name'); if (e) e.focus(); }, 100);
+    startSSODetection();
+  }
+
+  function startSSODetection() {
+    const detectEl = root.querySelector('#sso-detecting');
+    const resultEl = root.querySelector('#sso-result');
+    const manualEl = root.querySelector('#sso-manual');
+
+    detectSSOUser().then(ssoUser => {
+      const resolved = resolveRole(ssoUser.displayName, ssoUser.email);
+      if (detectEl) detectEl.style.display = 'none';
+
+      if (resolved) {
+        // Check saved session — auto-login if same person
+        const saved = loadSession();
+        if (saved && saved.name === resolved.name) {
+          doLoginWithRole(resolved.name, resolved.role);
+          return;
+        }
+        if (resolved.name === SUPER_ADMIN && saved && saved.name === 'Admin-tarun') {
+          doLoginWithRole('Admin-tarun', 'associate');
+          return;
+        }
+
+        // Show identity card
+        const isAdmin = resolved.role === 'admin';
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.innerHTML =
+            '<div style="background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.2);border-radius:12px;padding:18px;text-align:center;margin-bottom:14px">' +
+              '<div style="font-size:20px;font-weight:800;color:#a5b4fc;margin-bottom:4px">' + resolved.name + '</div>' +
+              '<div style="font-size:12px;color:rgba(255,255,255,.3);margin-bottom:8px">' + (ssoUser.email || ssoUser.loginName || 'SharePoint SSO') + '</div>' +
+              '<span style="padding:3px 12px;border-radius:20px;font-size:11px;font-weight:700;' +
+              (isAdmin ? 'background:rgba(163,113,247,.2);color:#a371f7' : 'background:rgba(88,166,255,.2);color:#58a6ff') + '">' +
+              (isAdmin ? '🛡 Admin' : '👤 Associate') + '</span>' +
+            '</div>' +
+            // For associate (or admin entering associate portal)
+            '<button id="sso-go-btn" style="width:100%;padding:13px;border:none;border-radius:10px;background:linear-gradient(135deg,#58a6ff,#a371f7);color:#fff;font-size:.95rem;font-weight:700;cursor:pointer;font-family:inherit;margin-bottom:8px">' +
+            (isAdmin ? '🛡 Enter Admin Portal' : '→ Enter WorkPulse') +
+            '</button>' +
+            // Super admin gets associate view option
+            (resolved.name === SUPER_ADMIN
+              ? '<button id="sso-assoc-btn" style="width:100%;padding:10px;border:1px solid rgba(88,166,255,.3);border-radius:10px;background:rgba(88,166,255,.07);color:#58a6ff;font-size:.85rem;font-weight:600;cursor:pointer;font-family:inherit;margin-bottom:8px">👤 Enter as Admin-tarun (Associate View)</button>'
+              : '') +
+            '<button id="sso-wrong-btn" style="width:100%;padding:8px;border:none;background:transparent;color:rgba(255,255,255,.25);font-size:.78rem;cursor:pointer;font-family:inherit">Not you? Enter manually</button>';
+
+          resultEl.querySelector('#sso-go-btn').onclick    = () => doLoginWithRole(resolved.name, resolved.role);
+          const assocBtn = resultEl.querySelector('#sso-assoc-btn');
+          if (assocBtn) assocBtn.onclick = () => doLoginWithRole('Admin-tarun', 'associate');
+          resultEl.querySelector('#sso-wrong-btn').onclick = () => {
+            resultEl.style.display = 'none';
+            if (manualEl) { manualEl.style.display = 'block'; const inp = root.querySelector('#login-name'); if (inp) inp.focus(); }
+          };
+        }
+      } else {
+        // Not authorised
+        if (detectEl) detectEl.style.display = 'none';
+        if (resultEl) {
+          resultEl.style.display = 'block';
+          resultEl.innerHTML =
+            '<div style="background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.2);border-radius:12px;padding:18px;text-align:center;margin-bottom:10px">' +
+              '<div style="font-size:18px;font-weight:800;color:#f85149;margin-bottom:6px">⛔ Access Denied</div>' +
+              '<div style="font-size:13px;color:rgba(255,255,255,.4);line-height:1.6">Your account <strong style="color:rgba(255,255,255,.6)">' + ssoUser.displayName + '</strong> is not registered. Contact your admin.</div>' +
+            '</div>' +
+            '<button id="sso-wrong-btn" style="width:100%;padding:9px;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:transparent;color:rgba(255,255,255,.3);font-size:.82rem;cursor:pointer;font-family:inherit">Try a different login</button>';
+          resultEl.querySelector('#sso-wrong-btn').onclick = () => {
+            resultEl.style.display = 'none';
+            if (manualEl) { manualEl.style.display = 'block'; }
+          };
+        }
+      }
+    }).catch(() => {
+      // SSO failed — show manual input
+      if (detectEl) detectEl.style.display = 'none';
+      if (manualEl) { manualEl.style.display = 'block'; const inp = root.querySelector('#login-name'); if (inp) inp.focus(); }
+    });
+  }
+
+  function doLoginWithRole(name, role) {
+    // Strict role enforcement
+    const isKnownAdmin = ADMINS.includes(name);
+    const isKnownAssoc = ASSOCIATES.includes(name) || name === 'Admin-tarun';
+    // Enforce correct role
+    if (role === 'admin' && !isKnownAdmin) { toast('⛔ ' + name + ' is not an admin', 'err'); return; }
+    if (role === 'associate' && isKnownAdmin && name !== 'Admin-tarun') { role = 'admin'; } // redirect admins
+    if (!isKnownAdmin && !isKnownAssoc)    { toast('⛔ Not authorised: ' + name, 'err'); return; }
+    currentRole = role;
+    // For associates: load only own submissions
+    if (role === 'associate') {
+      const userKey = 'dtr_subs_' + name.toLowerCase().replace(/\s+/g,'_');
+      submissions = safeLoad(userKey, []).filter(s => s && s.employeeName === name);
+    } else {
+      submissions = [];
+    }
+    const sess = saveSession(name);
+    authState  = { loggedIn:true, name, sid:sess.sid };
+    buildApp();
+    toast('Welcome, ' + name + (role==='admin'?' 🛡':'') + '!', 'ok');
+    // Pre-fetch SP list types in background
+    setTimeout(async () => {
+      await getListType(SP.TASK_LIST,   'task');
+      await getListType(SP.STATUS_LIST, 'att');
+      await getListType(SP.NPT_LIST,    'npt');
+      console.log('[WorkPulse] SP list types cached:', JSON.stringify(_listTypes));
+    }, 1500);
+    // Sync data
+    if (role === 'admin') {
+      teamStatusCache_adm = safeLoadObj('dtr_teamcache',{});
+      setTimeout(() => fetchAllAdminData(), 2000);
+    } else {
+      setTimeout(() => fetchOwnAttendance(true), 1000);
+      setTimeout(() => fetchOwnTasks(true),       2500);
+      setTimeout(() => fetchOwnNPT(true),         4000);
+    }
   }
 
   function doLogin() {
-    const el = q('#login-name'), name = el ? el.value : '';
-    const err = q('#login-err');
-    if (!name) { if (err) err.textContent = 'Please select your login.'; return; }
-    if (!ASSOCIATES.includes(name)) { if (err) err.textContent = 'Invalid login selected.'; return; }
-    const sess = saveSession(name);
-    authState = { loggedIn:true, name, sid:sess.sid };
-    buildApp();
-    toast('Welcome, ' + name + '!', 'ok');
-    // Sync all own data from SP after login
-    setTimeout(() => fetchOwnAttendance(true), 1000);
-    setTimeout(() => fetchOwnTasks(true),       2500);
-    setTimeout(() => fetchOwnNPT(true),         4000);
+    const el  = root.querySelector('#login-name');
+    const raw = (el ? el.value : '').trim();
+    const err = root.querySelector('#login-err');
+    if (!raw) { if (err) err.textContent = 'Enter your login name.'; return; }
+    const adminHit = ADMINS.find(a => a.toLowerCase() === raw.toLowerCase());
+    const assocHit = ASSOCIATES.find(a => a.toLowerCase() === raw.toLowerCase());
+    if (adminHit)      doLoginWithRole(adminHit, 'admin');
+    else if (assocHit) doLoginWithRole(assocHit, 'associate');
+    else { if (err) err.textContent = '⛔ "' + raw + '" is not an authorised login.'; }
   }
 
   function doLogout() {
-    if (!confirm('Log out as "' + authState.name + '"?')) return;
-    clearSession(); authState = { loggedIn:false, name:'', sid:'' };
-    renderLogin(); toast('Logged out.', 'info');
+    const name = authState.name;
+    clearSession();
+    submissions = [];
+    authState   = { loggedIn:false, name:'', sid:'' };
+    currentRole = 'associate';
+    renderLogin();
+    toast('Logged out — ' + name, 'info');
   }
 
   function buildApp() {
+    const isAdmin     = currentRole === 'admin';
+    const isSuperAdmin= authState.name === SUPER_ADMIN || authState.name === 'Admin-tarun';
+    const activeTabs  = isAdmin ? ADMIN_TABS : ASSOC_TABS;
     const ms = mySubmissions();
     const todaySt = statusCache[todayStr()];
+
     let sbHtml = '', grp = '';
-    TABS.forEach(t => {
+    activeTabs.forEach(t => {
       if (t.group !== grp) { grp = t.group; sbHtml += '<div class="sb-sec">' + grp + '</div>'; }
       sbHtml += '<button class="sb-item" data-action="switch-tab" data-val="' + t.id + '">' + t.icon + ' ' + t.label + '</button>';
     });
+
+    // Role badge style
+    const roleBadgeStyle = isAdmin
+      ? 'background:rgba(163,113,247,.15);color:#a371f7'
+      : 'background:rgba(88,166,255,.12);color:var(--accent)';
+    const roleLabel = isAdmin ? '🛡 Admin' : 'Associate';
+
+    // Switch view button (SuperAdmin only)
+    const switchBtn = isSuperAdmin
+      ? '<button class="icon-btn" data-action="switch-role" title="' + (isAdmin?'Switch to Associate View':'Switch to Admin Portal') + '" style="font-size:.7rem;width:auto;padding:0 8px;gap:3px">' +
+        (isAdmin ? '👤' : '🛡') + '</button>'
+      : '';
+
+    // Sidebar footer — show team stats in admin, own stats for associate
+    const sidebarFooter = isAdmin
+      ? '<div class="sb-stat"><div class="lbl">Members</div><div class="val" id="sb-members">' + getAllMembers().length + '</div></div>' +
+        '<div class="sb-stat"><div class="lbl">Total Entries</div><div class="val" id="sb-total">' + (Array.isArray(submissions)?submissions.length:0) + '</div></div>'
+      : '<div class="sb-stat"><div class="lbl">My Entries</div><div class="val" id="sb-total">' + ms.length + '</div></div>' +
+        '<div class="sb-stat"><div class="lbl">Productivity</div><div class="val" style="color:var(--green)" id="sb-avg">' + calcAvgProd(ms).toFixed(0) + '%</div></div>';
+
     root.innerHTML =
       '<div id="dtr-topbar">' +
         '<div class="dtr-logo"><div class="dtr-logo-icon">' + ic.logo + '</div><span class="dtr-logo-text">WorkPulse</span></div>' +
-        '<div class="dtr-tabs">' + TABS.map(t => '<button class="dtr-tab" data-action="switch-tab" data-val="' + t.id + '">' + t.icon + ' ' + t.label + '</button>').join('') + '</div>' +
+        '<div class="dtr-tabs">' + activeTabs.map(t => '<button class="dtr-tab" data-action="switch-tab" data-val="' + t.id + '">' + t.icon + ' ' + t.label + '</button>').join('') + '</div>' +
         '<div class="dtr-topbar-r">' +
-          (todaySt ? '<span class="sp sp-' + (todaySt.status||'').toLowerCase().replace(' ','-') + '" style="font-size:.75rem">' + todaySt.status + '</span>' : '') +
-          '<div class="dtr-user-pill"><div class="av">' + authState.name[0].toUpperCase() + '</div><span>' + authState.name + '</span><span class="role-badge">Associate</span></div>' +
+          (todaySt && !isAdmin ? '<span class="sp sp-' + (todaySt.status||'').toLowerCase().replace(' ','-') + '" style="font-size:.75rem">' + todaySt.status + '</span>' : '') +
+          '<div class="dtr-user-pill"><div class="av">' + authState.name[0].toUpperCase() + '</div><span>' + authState.name + '</span>' +
+            '<span class="role-badge" style="' + roleBadgeStyle + '">' + roleLabel + '</span>' +
+          '</div>' +
+          switchBtn +
           '<button class="icon-btn" data-action="toggle-theme" id="theme-btn">' + (theme==='dark'?ic.sun:ic.moon) + '</button>' +
           '<button class="icon-btn danger" data-action="do-logout" title="Logout">' + ic.logout + '</button>' +
           '<button class="icon-btn danger" data-action="close-app">' + ic.close + '</button>' +
@@ -557,13 +805,12 @@
       '</div>' +
       '<div id="dtr-body">' +
         '<div id="dtr-sidebar">' + sbHtml +
-          '<hr class="sep" style="margin:8px 0"><div class="sb-footer">' +
-          '<div class="sb-stat"><div class="lbl">My Entries</div><div class="val" id="sb-total">' + ms.length + '</div></div>' +
-          '<div class="sb-stat"><div class="lbl">Productivity</div><div class="val" style="color:var(--green)" id="sb-avg">' + calcAvgProd(ms).toFixed(0) + '%</div></div>' +
-          '</div></div>' +
-        '<div id="dtr-main">' + TABS.map(t => '<div class="dtr-view anim" id="view-' + t.id + '" style="display:none"></div>').join('') + '</div>' +
+          '<hr class="sep" style="margin:8px 0"><div class="sb-footer">' + sidebarFooter + '</div>' +
+        '</div>' +
+        '<div id="dtr-main">' + activeTabs.map(t => '<div class="dtr-view anim" id="view-' + t.id + '" style="display:none"></div>').join('') + '</div>' +
       '</div><div id="dtr-toast"></div>';
-    switchTab(TABS[0].id);
+
+    switchTab(activeTabs[0].id);
   }
 
   function switchTab(tab) {
@@ -577,13 +824,21 @@
   }
 
   function renderView(v) {
-    if (v === 'submit')    renderSubmit();
-    if (v === 'analytics') renderAnalytics();
-    if (v === 'tracker')   renderTracker();
-    if (v === 'mark')      renderMarkAttendance();
-    if (v === 'calendar')  renderMyCalendar();
-    if (v === 'missednpt') renderMissedNPT();
-    if (v === 'settings')  renderSettings();
+    if (currentRole === 'admin') {
+      if (v === 'overview')  renderAdminOverview();
+      if (v === 'teamtrack') renderAdminTeamTracker();
+      if (v === 'attweek')   renderAdminWeekView();
+      if (v === 'attnpt')    renderAdminNPTLog();
+      if (v === 'settings')  renderSettings();
+    } else {
+      if (v === 'submit')    renderSubmit();
+      if (v === 'analytics') renderAnalytics();
+      if (v === 'tracker')   renderTracker();
+      if (v === 'weekly')    renderWeeklyCalendar();   // attendance editing
+      if (v === 'calendar')  renderMyCalendar();       // view-only
+      if (v === 'missednpt') renderMissedNPT();
+      if (v === 'settings')  renderSettings();
+    }
   }
 
   function toggleTheme() {
@@ -602,6 +857,30 @@
       case 'switch-tab':    switchTab(v); break;
       case 'toggle-theme':  toggleTheme(); break;
       case 'close-app':     root.style.display = 'none'; break;
+      case 'switch-role': {
+        // SuperAdmin only — toggle between admin and associate view
+        if (authState.name !== SUPER_ADMIN && authState.name !== 'Admin-tarun') break;
+        if (currentRole === 'admin') {
+          currentRole = 'associate';
+          const oldName = authState.name;
+          authState.name = 'Admin-tarun';
+          saveSession('Admin-tarun');
+          submissions = safeLoad('dtr_subs_admin-tarun', []).filter(s => s && s.employeeName === 'Admin-tarun');
+          buildApp();
+          toast('Switched to Associate view (Admin-tarun)', 'info');
+          setTimeout(() => fetchOwnAttendance(true), 800);
+        } else {
+          currentRole = 'admin';
+          authState.name = SUPER_ADMIN;
+          saveSession(SUPER_ADMIN);
+          submissions = [];
+          teamStatusCache_adm = safeLoadObj('dtr_teamcache', {});
+          buildApp();
+          toast('Switched to Admin Portal', 'info');
+          setTimeout(() => fetchAllAdminData(), 1000);
+        }
+        break;
+      }
       case 'mode-single':   setTaskMode('single', btn); break;
       case 'mode-multi':    setTaskMode('multi', btn); break;
       case 'add-card':      addTaskCard(); break;
@@ -678,8 +957,17 @@
       case 'npt-log':       nptLogEntry(); break;
       case 'npt-del':       nptDel(+btn.dataset.idx); break;
       case 'test-sp':        testSP(); break;
+      case 'test-npt':       testNPTConnection(); break;
       case 'sync-my-data':   toast('Syncing your data from SP...','info'); fetchOwnAttendance(false); setTimeout(()=>fetchOwnTasks(false),1500); setTimeout(()=>fetchOwnNPT(false),3000); break;
       case 'flush-queue':   flushQueueManual(); break;
+      // Admin actions
+      case 'adm-sync-all':   fetchAllAdminData(); break;
+      case 'adm-sync-tasks': fetchAdminTasks(); break;
+      case 'adm-sync-att':   fetchAdminAttendance(); break;
+      case 'adm-sync-npt':   fetchAdminNPT(); break;
+      case 'adm-wv-prev':    adminWeekOffset--; renderAdminWeekView(); break;
+      case 'adm-wv-next':    adminWeekOffset++; renderAdminWeekView(); break;
+      case 'adm-wv-today':   adminWeekOffset=0;  renderAdminWeekView(); break;
     }
   }
 
@@ -711,6 +999,7 @@
       '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="clear-submit">Clear All</button></div></div>' +
       '<div class="card"><div class="card-title">Employee Info</div><div class="g2">' +
       '<div class="dtr-field"><label class="dtr-label">Full Name</label><input class="dtr-input" value="' + authState.name + '" readonly style="cursor:default"></div>' +
+      '<div class="dtr-field"><label class="dtr-label">Shift</label><select id="a-shift" class="dtr-select"><option value="8-5">8 AM – 5 PM</option><option value="9-6">9 AM – 6 PM</option><option value="10-7">10 AM – 7 PM</option><option value="11-8">11 AM – 8 PM</option></select></div>' +
       '<div class="dtr-field"><label class="dtr-label">Date <span style="font-size:.73rem;color:var(--text3)">(Today or Yesterday only)</span></label>' +
       '<div class="date-pill-row">' +
       '<button class="date-pill' + (selectedDate===todayStr()?' active':'') + '" data-action="pick-date" data-val="' + todayStr() + '">Today — ' + formatDate(todayStr()) + '</button>' +
@@ -788,29 +1077,112 @@
   function updateDayViz() { let prod=0,npt=0; qa('.task-card').forEach(card=>{if(card.classList.contains('leave')){npt+=8;return;}const h=parseFloat(card.querySelector('.dtr-hrs')?.value)||0,wt=card.querySelector('.dtr-wtype')?.value||'Productive';if(wt==='NPT')npt+=h;else{prod+=h;npt+=Math.max(0,WH-h);}}); npt=Math.min(WH,Math.max(0,npt));prod=Math.min(WH,prod); const pEl=q('#dviz-prod'),nEl=q('#dviz-npt'),pv=q('#dviz-prod-val'),nv=q('#dviz-npt-val'),sv=q('#dviz-summary'); if(pEl)pEl.style.width=(prod/WH*100)+'%';if(nEl)nEl.style.width=(npt/WH*100)+'%';if(pv)pv.textContent=prod.toFixed(1)+'h';if(nv)nv.textContent=npt.toFixed(1)+'h';if(sv)sv.textContent=prod.toFixed(1)+'h prod + '+npt.toFixed(1)+'h NPT / 8h'; }
 
   async function doSubmit() {
-    const dateVal = q('#a-date')?.value||selectedDate; const cards = qa('.task-card'); const tasks = []; let hasErr = false;
+    // ── Collect form values ──────────────────────────────────────────────
+    const dateVal = q('#a-date')?.value || todayStr();
+    const shift   = q('#a-shift')?.value || '8-5';
+    const cards   = Array.from(qa('.task-card'));
+    const tasks   = [];
+    let hasErr    = false;
+
     cards.forEach(card => {
       const isLeave = card.classList.contains('leave');
-      if (isLeave) { const lh = card.querySelector('.leave-hours-display')?.textContent.includes('4')?4:8; tasks.push({employeeName:authState.name,taskType:'Leave',hours:0,npt:lh,workType:'NPT',adhoc:'',date:dateVal,submittedAt:new Date().toISOString()}); return; }
-      const tt = card.querySelector('.dtr-tt')?.value||'', wt = card.querySelector('.dtr-wtype')?.value||'Productive', h = parseFloat(card.querySelector('.dtr-hrs')?.value)||0;
-      const reqComment = card.querySelector('.dtr-adhoc')?.value?.trim()||'';
-      const optNote    = card.querySelector('.dtr-note')?.value?.trim()||'';
-      const ad = reqComment + (reqComment && optNote ? ' | Note: ' + optNote : optNote ? 'Note: ' + optNote : '');
-      if (!tt) { toast('Select task type','err'); hasErr=true; return; }
-      if (h<=0&&wt!=='NPT') { toast('Enter hours','err'); hasErr=true; return; }
-      if ((tt==='Ad-hoc Tasks'||tt==='Other'||tt==='Meeting')&&!reqComment) { toast('Please add ' + (tt==='Meeting'?'meeting details':'a comment') + ' for ' + tt,'err'); hasErr=true; return; }
-      const npt = wt==='NPT'?h:Math.max(0,WH-h);
-      tasks.push({employeeName:authState.name,taskType:tt,hours:h,npt,workType:wt,adhoc:ad,date:dateVal,submittedAt:new Date().toISOString()});
+      if (isLeave) {
+        const lhText = card.querySelector('.leave-hours-display')?.textContent || '';
+        const lh = lhText.includes('4') ? 4 : 8;
+        tasks.push({
+          employeeName: authState.name,
+          taskType:     'Leave',
+          hours:        0,
+          npt:          lh,
+          workType:     'NPT',
+          adhoc:        '',
+          shift,
+          date:         dateVal,
+          submittedAt:  nowUTC()
+        });
+        return;
+      }
+
+      const tt  = card.querySelector('.dtr-tt')?.value    || '';
+      const wt  = card.querySelector('.dtr-wtype')?.value || 'Productive';
+      const hrs = parseFloat(card.querySelector('.dtr-hrs')?.value) || 0;
+      const reqComment = (card.querySelector('.dtr-adhoc')?.value || '').trim();
+      const optNote    = (card.querySelector('.dtr-note')?.value   || '').trim();
+      const adhoc = reqComment + (reqComment && optNote ? ' | ' + optNote : optNote || '');
+
+      // Validation
+      if (!tt) {
+        toast('Select a task type for each row', 'err'); hasErr = true; return;
+      }
+      if (hrs <= 0 && wt !== 'NPT') {
+        toast('Enter hours worked (must be > 0)', 'err'); hasErr = true; return;
+      }
+      if (hrs > 8) {
+        toast('Max 8 hours per task', 'err'); hasErr = true; return;
+      }
+      if ((tt === 'Ad-hoc Tasks' || tt === 'Other' || tt === 'Meeting') && !reqComment) {
+        toast('Please add a comment for ' + tt, 'err'); hasErr = true; return;
+      }
+
+      const nptHrs = wt === 'NPT' ? hrs : Math.max(0, WH - hrs);
+
+      tasks.push({
+        employeeName: authState.name,
+        taskType:     tt,
+        hours:        hrs,
+        npt:          nptHrs,
+        workType:     wt,
+        adhoc,
+        shift,
+        date:         dateVal,
+        submittedAt:  localISOString()
+      });
     });
-    if (hasErr||!tasks.length) return;
-    const sb = q('[data-action="do-submit"]'); if (sb) { sb.disabled=true; sb.textContent='Submitting...'; }
-    tasks.forEach(t => submissions.push(t)); safeSave('dtr_subs4', submissions); updateSBStats();
+
+    if (hasErr || !tasks.length) {
+      if (!hasErr) toast('No tasks to submit', 'err');
+      return;
+    }
+
+    // ── Disable button & show progress ──────────────────────────────────
+    const sb = q('[data-action="do-submit"]');
+    if (sb) { sb.disabled = true; sb.textContent = 'Submitting...'; }
+
+    // ── Save locally first ───────────────────────────────────────────────
+    tasks.forEach(t => submissions.push(t));
+    const userKey = 'dtr_subs_' + authState.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    safeSave(userKey, submissions);
+    updateSBStats();
+
+    // ── Post to SharePoint ───────────────────────────────────────────────
     let posted = 0;
-    for (const t of tasks) { const s = await postTask(t); if (s) posted++; else spQueue.push(t); }
+    for (const t of tasks) {
+      const ok = await postTask(t);
+      if (ok) {
+        posted++;
+        console.log('[WorkPulse] ✅ SP saved:', t.employeeName, t.taskType, t.date);
+      } else {
+        spQueue.push(t);
+        console.warn('[WorkPulse] ⚠ Queued:', t.taskType, t.date);
+      }
+    }
     safeSave('dtr_spq2', spQueue);
-    if (sb) { sb.disabled=false; sb.innerHTML=ic.submit+' Submit Report'; }
-    toast(posted===tasks.length ? '✅ '+tasks.length+' task(s) submitted!' : 'Saved locally ('+( tasks.length-posted)+' queued)', 'ok');
-    selectedDate = todayStr(); renderSubmit();
+
+    // ── Restore button ───────────────────────────────────────────────────
+    if (sb) { sb.disabled = false; sb.innerHTML = ic.submit + ' Submit Report'; }
+
+    // ── Toast result ─────────────────────────────────────────────────────
+    if (posted === tasks.length) {
+      toast('✅ ' + tasks.length + ' task(s) saved to SharePoint!', 'ok');
+    } else if (posted > 0) {
+      toast('⚠️ ' + posted + '/' + tasks.length + ' saved to SP · ' + (tasks.length - posted) + ' queued', 'info');
+    } else {
+      toast('❌ SP unreachable — saved locally. Open ' + SP.SITE + ' in a tab, then retry in Settings.', 'err');
+    }
+
+    // ── Reset form ────────────────────────────────────────────────────────
+    selectedDate = todayStr();
+    renderSubmit();
   }
 
   // ANALYTICS TAB
@@ -1019,16 +1391,12 @@
   }
 
   // MARK ATTENDANCE
-  let attDate = todayStr();
   let attSelectedStatus = '';
-  let attMultiSelect    = new Set(); // dates selected for bulk apply
-  let attBulkMode       = false;     // whether bulk-select is active
 
   // ── MARK ATTENDANCE — weekly grid UI, any date editable ──────────────
-  let attWeekOffset   = 0;
 
-  function renderMarkAttendance() {
-    const el = q('#view-mark'); if (!el) return;
+  function renderWeeklyCalendar() {
+    const el = q('#view-weekly'); if (!el) return;
     if (!attDate) attDate = todayStr();
     const today = todayStr();
     const ws = getWeekStart(attWeekOffset);
@@ -1042,8 +1410,8 @@
     });
 
     el.innerHTML =
-      '<div class="ph"><div class="ph-left"><div class="ph-title">Mark Attendance</div>' +
-      '<div class="ph-sub">Click a day to mark · Use Multi-select to apply one status to many days</div></div></div>' +
+      '<div class="ph"><div class="ph-left"><div class="ph-title">Weekly Calendar</div>' +
+      '<div class="ph-sub">Click a day · Multi-select for bulk · All attendance edits here</div></div></div>' +
 
       // Week navigator + controls
       '<div class="wv-controls" style="margin-bottom:14px">' +
@@ -1113,7 +1481,7 @@
     if (!status || attMultiSelect.size===0) return;
     let saved = 0;
     for (const dk of attMultiSelect) {
-      const entry = {status, process:'', task:'', date:dk, name:authState.name, updatedAt:new Date().toISOString()};
+      const entry = {status, process:'', task:'', date:dk, name:authState.name, updatedAt:nowUTC()};
       statusCache[dk] = {...entry};
       teamStatusCache[authState.name+'::'+dk] = {status, process:'', task:''};
       const ok = await postAttendance(entry); if(ok) saved++;
@@ -1156,6 +1524,15 @@
           '<div class="status-tile-label">' + s + '</div>' +
           '<div class="status-tile-sub">' + cfg.label + '</div></div>';
       }).join('') + '</div>' +
+      '<div class="dtr-field" style="margin-bottom:14px">' +
+      '<label class="dtr-label">Shift Timing</label>' +
+      '<select class="dtr-select" id="att-shift" style="max-width:220px">' +
+      '<option value=""' + (!existing.shift?' selected':'') + '>— Select shift (optional) —</option>' +
+      '<option value="8-5"' + (existing.shift==='8-5'?' selected':'') + '>8 AM – 5 PM</option>' +
+      '<option value="9-6"' + (existing.shift==='9-6'?' selected':'') + '>9 AM – 6 PM</option>' +
+      '<option value="10-7"' + (existing.shift==='10-7'?' selected':'') + '>10 AM – 7 PM</option>' +
+      '<option value="11-8"' + (existing.shift==='11-8'?' selected':'') + '>11 AM – 8 PM</option>' +
+      '</select></div>' +
       '<button class="att-save-btn" id="att-save-btn" data-action="att-save"' + (!selStatus ? ' disabled' : '') + '>' +
       ic.check + ' Save — ' + dateLabel + '</button>' +
       '</div>';
@@ -1192,10 +1569,11 @@
     if (!attSelectedStatus) { toast('Select a status first', 'err'); return; }
     const btn = q('[data-action="att-save"]');
     if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
-    const entry = { status: attSelectedStatus, process: '', task: '', date: attDate, name: authState.name, updatedAt: new Date().toISOString() };
+    const shift = q('#att-shift')?.value || '';
+    const entry = { status: attSelectedStatus, process: '', task: '', shift, date: attDate, name: authState.name, updatedAt: nowUTC() };
     statusCache[attDate] = entry;
     safeSaveObj('dtr_status2', statusCache);
-    teamStatusCache[authState.name + '::' + attDate] = { status: entry.status, process: '', task: '' };
+    teamStatusCache[authState.name + '::' + attDate] = { status: entry.status, process: '', task: '', shift };
     safeSaveObj('dtr_teamcache', teamStatusCache);
     const sent = await postAttendance(entry);
     if (!sent) toast('Saved locally (SP sync pending)', 'info');
@@ -1240,8 +1618,12 @@
   }
 
   // ── MY CALENDAR ────────────────────────────────────────────────────────
-  let calMonthOffset = 0;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // MY ATTENDANCE CALENDAR — merged attendance + calendar
+  // Sat/Sun = holidays, click any weekday to mark, multi-select supported
+  // ═══════════════════════════════════════════════════════════════════════
+  // MY CALENDAR — view-only attendance overview (no editing)
   function renderMyCalendar() {
     const el = q('#view-calendar'); if (!el) return;
     const now = new Date();
@@ -1254,123 +1636,186 @@
     const totalDays = new Date(year, month + 1, 0).getDate();
     const monthKey  = year + '-' + String(month+1).padStart(2,'0');
     const monthEntries = Object.entries(statusCache).filter(([dk]) => dk.startsWith(monthKey));
-    const wfoCnt = monthEntries.filter(([,v]) => v.status==='WFO').length;
-    const wfhCnt = monthEntries.filter(([,v]) => v.status==='WFH').length;
-    const slCnt  = monthEntries.filter(([,v]) => v.status==='SL').length;
-    const clCnt  = monthEntries.filter(([,v]) => v.status==='CL').length;
-    const alCnt  = monthEntries.filter(([,v]) => v.status==='AL').length;
-    const ooCnt  = monthEntries.filter(([,v]) => v.status==='Optional Off').length;
-    const markedDays = monthEntries.length;
-    let workingDays = 0;
-    for (let d = 1; d <= totalDays; d++) {
-      const dow = new Date(year, month, d).getDay();
-      if (dow !== 0 && dow !== 6) workingDays++;
-    }
+    const countSt = s => monthEntries.filter(([,v]) => v.status===s).length;
+    let workDays = 0;
+    for (let d=1; d<=totalDays; d++) { const dow=new Date(year,month,d).getDay(); if(dow!==0&&dow!==6) workDays++; }
+    const markedDays = monthEntries.filter(([dk])=>{const dow=new Date(dk+'T12:00:00').getDay();return dow!==0&&dow!==6;}).length;
     const STATUS_COLOR = {WFO:'#3fb950',WFH:'#22d3ee',SL:'#f85149',CL:'#d29922',AL:'#a371f7','Optional Off':'#6b7280'};
-    const STATUS_SHORT = {WFO:'WFO',WFH:'WFH',SL:'SL',CL:'CL',AL:'AL','Optional Off':'Off'};
-    const dayHeaders = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const STATUS_BG    = {WFO:'rgba(63,185,80,.13)',WFH:'rgba(6,182,212,.13)',SL:'rgba(248,81,73,.13)',CL:'rgba(210,153,34,.13)',AL:'rgba(163,113,247,.13)','Optional Off':'rgba(107,114,128,.13)'};
+    const DAY_HDRS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+    // Build cells — no click handlers (view-only)
     let cells = '';
-    for (let i = 0; i < firstDay; i++) cells += '<div class="cal-cell cal-empty"></div>';
-    for (let d = 1; d <= totalDays; d++) {
-      const dk  = year + '-' + String(month+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
-      const dow = new Date(year, month, d).getDay();
-      const isWeekend = dow===0||dow===6, isToday=dk===today, isFuture=dk>today;
-      const st = (statusCache[dk]||{}).status||'';
-      const color = st ? STATUS_COLOR[st] : '', short = st ? STATUS_SHORT[st] : '';
-      cells += '<div class="cal-cell' + (isWeekend?' cal-weekend':'') + (isToday?' cal-today':'') + (isFuture?' cal-future':'') + '"' +
-        (st?' style="border-color:'+color+';background:'+color+'18"':'') + ' data-dk="'+dk+'">' +
+    for (let i=0; i<firstDay; i++) cells += '<div class="cal-cell cal-empty"></div>';
+    for (let d=1; d<=totalDays; d++) {
+      const dk      = year+'-'+String(month+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+      const dow     = new Date(year,month,d).getDay();
+      const isWknd  = dow===0||dow===6;
+      const isToday = dk===today;
+      const isFuture= dk>today;
+      const st      = (statusCache[dk]||{}).status||'';
+      const color   = st ? STATUS_COLOR[st] : '';
+      const bg      = st ? STATUS_BG[st] : '';
+      let cellStyle = 'cursor:default;';
+      if (isWknd) cellStyle += 'background:rgba(255,255,255,.012);';
+      else if (st) cellStyle += 'background:'+bg+';border-color:'+color+';';
+      cells += '<div class="cal-cell'+(isWknd?' cal-weekend':'')+(isToday?' cal-today':'')+(isFuture&&!isWknd?' cal-future':'')+'" style="'+cellStyle+'">' +
         '<div class="cal-day-num'+(isToday?' cal-today-num':'')+'">'+d+'</div>' +
-        (st?'<div class="cal-day-badge" style="background:'+color+';color:#fff;padding:2px 6px;border-radius:4px;font-size:.68rem;font-weight:800;margin-top:4px">'+short+'</div>':
-           (isWeekend?'<div class="cal-day-wknd" style="font-size:.68rem;color:var(--text3);margin-top:4px">—</div>':'')) +
+        (isWknd ? '<div style="font-size:.6rem;color:var(--text3);margin-top:2px">—</div>' :
+          st ? '<div class="cal-day-badge" style="background:'+color+';color:#fff;padding:2px 6px;border-radius:4px;font-size:.68rem;font-weight:800;margin-top:4px">'+st+'</div>'
+             : '') +
         '</div>';
     }
+
+    // Summary pills
+    const sumItems = [['WFO',countSt('WFO'),'#3fb950'],['WFH',countSt('WFH'),'#22d3ee'],['SL',countSt('SL'),'#f85149'],['CL',countSt('CL'),'#d29922'],['AL',countSt('AL'),'#a371f7'],['Off',countSt('Optional Off'),'#6b7280']].filter(([,n])=>n>0);
+
     el.innerHTML =
-      '<div class="ph"><div class="ph-left"><div class="ph-title">My Attendance Calendar</div>' +
-      '<div class="ph-sub">'+markedDays+' of '+workingDays+' working days marked · Click any day to mark or edit</div></div>' +
+      '<div class="ph"><div class="ph-left"><div class="ph-title">My Calendar</div>' +
+      '<div class="ph-sub">'+markedDays+' of '+workDays+' working days marked · View-only — use Weekly Calendar to edit</div></div>' +
       '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="cal-sync">'+ic.sync+' Sync</button></div></div>' +
-      '<div class="wv-controls" style="margin-bottom:16px">' +
+      '<div class="info-banner" style="margin-bottom:14px">📋 This is a read-only view of your attendance. To mark or edit attendance, go to the <strong>Weekly Calendar</strong> tab.</div>' +
+      '<div class="wv-controls" style="margin-bottom:14px">' +
       '<button class="wv-nav-btn" data-action="cal-prev">'+ic.left+'</button>' +
       '<div class="wv-range"><div class="wv-range-title">'+monthName+'</div>' +
       '<div class="wv-range-sub">'+(calMonthOffset===0?'Current Month':Math.abs(calMonthOffset)+' month(s) '+(calMonthOffset<0?'ago':'ahead'))+'</div></div>' +
       (calMonthOffset!==0?'<button class="wv-today-btn" data-action="cal-today">This Month</button>':'') +
       '<button class="wv-nav-btn" data-action="cal-next">'+ic.right+'</button></div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">' +
-      '<div class="stat-card gb" style="flex:1;min-width:100px"><div class="lbl">WFO</div><div class="val" style="color:#3fb950">'+wfoCnt+'</div></div>' +
-      '<div class="stat-card ab" style="flex:1;min-width:100px"><div class="lbl">WFH</div><div class="val" style="color:#22d3ee">'+wfhCnt+'</div></div>' +
-      '<div class="stat-card amb" style="flex:1;min-width:100px"><div class="lbl">Leaves</div><div class="val" style="color:var(--amber)">'+(slCnt+clCnt+alCnt)+'</div><div class="sub">SL '+slCnt+' CL '+clCnt+' AL '+alCnt+'</div></div>' +
-      '<div class="stat-card pb" style="flex:1;min-width:100px"><div class="lbl">Opt Off</div><div class="val" style="color:var(--text3)">'+ooCnt+'</div></div>' +
-      '</div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">' +
-      Object.entries(STATUS_COLOR).map(([s,c])=>'<div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:3px;background:'+c+'"></div><span style="font-size:.76rem;color:var(--text2);font-weight:600">'+s+'</span></div>').join('') +
-      '</div>' +
+      (sumItems.length ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'+
+        sumItems.map(([l,n,c])=>'<span style="padding:4px 10px;border-radius:20px;background:'+c+'18;border:1px solid '+c+'40;color:'+c+';font-size:.75rem;font-weight:700">'+l+' '+n+'</span>').join('')+'</div>' : '') +
       '<div class="cal-grid-wrap">' +
-      '<div class="cal-header">'+dayHeaders.map(d=>'<div class="cal-hcell">'+d+'</div>').join('')+'</div>' +
-      '<div class="cal-grid" id="cal-grid">'+cells+'</div>' +
-      '</div>' +
-      (markedDays===0&&calMonthOffset===0?'<div class="info-banner" style="margin-top:12px">📅 No records yet. Click <strong>Sync</strong> to load from SharePoint, or go to <strong>Mark Attendance</strong> to start marking.</div>':'') +
-      '<div id="cal-edit-panel" style="margin-top:14px"></div>';
-
-    const grid = el.querySelector('#cal-grid');
-    if (grid) {
-      grid.addEventListener('click', e => {
-        const cell = e.target.closest('.cal-cell');
-        if (!cell||!cell.dataset.dk||cell.classList.contains('cal-empty')) return;
-        const dk = cell.dataset.dk;
-        el.querySelectorAll('.cal-cell').forEach(c => c.classList.toggle('cal-cell-active', c.dataset.dk===dk));
-        attDate = dk;
-        attSelectedStatus = (statusCache[dk]||{}).status||'';
-        const panel = q('#cal-edit-panel');
-        if (panel) { panel.innerHTML = buildAttEditPanel(dk); panel.scrollIntoView({behavior:'smooth',block:'nearest'}); }
-      });
-    }
+      '<div class="cal-header">'+DAY_HDRS.map(h=>'<div class="cal-hcell">'+h+'</div>').join('')+'</div>' +
+      '<div class="cal-grid">'+cells+'</div></div>';
   }
 
 
-
-  // ── MY CALENDAR ────────────────────────────────────────────────────────
-  // MISSED NPT
-  const NPT_TYPES = ['System Issue','Meeting Overrun','Training','Lack of Work','Power Outage','Network Issue','Admin Task','Other'];
-  let nptActiveType = '';
-
   function renderMissedNPT() {
     const el = q('#view-missednpt'); if (!el) return;
-    const myNPT = nptCache.filter(n => n.name === authState.name);
+    const myNPT     = nptCache.filter(n => n.name === authState.name);
     const totalMins = myNPT.reduce((a,n)=>a+(n.minutes||0),0);
     const h = Math.floor(totalMins/60), m = totalMins%60;
-    const thisMonth = new Date().toISOString().slice(0,7);
+    const now = new Date();
+    const thisMonth = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
     const monthMins = myNPT.filter(n=>n.date&&n.date.startsWith(thisMonth)).reduce((a,n)=>a+(n.minutes||0),0);
+
     el.innerHTML =
-      '<div class="ph"><div class="ph-left"><div class="ph-title">Missed NPT Log</div><div class="ph-sub">Record non-productive time not in daily tasks</div></div></div>' +
-      '<div class="npt-summary-cards">' +
-      '<div class="npt-sum-card"><div class="lbl">Entries</div><div class="val">' + myNPT.length + '</div></div>' +
-      '<div class="npt-sum-card"><div class="lbl">Total Time</div><div class="val">' + (h>0?h+'h ':'')+m+'m</div></div>' +
-      '<div class="npt-sum-card"><div class="lbl">This Month</div><div class="val">' + Math.floor(monthMins/60)+'h '+monthMins%60+'m</div></div></div>' +
-      '<div class="npt-log-form"><div class="npt-log-form-title">Log Missed NPT</div>' +
-      '<div class="npt-types">' + NPT_TYPES.map(t => '<button class="npt-type-btn' + (nptActiveType===t?' active':'') + '" data-action="npt-type" data-val="' + t + '">' + t + '</button>').join('') + '</div>' +
-      '<div class="g3"><div class="dtr-field"><label class="dtr-label">Date</label><input type="date" class="dtr-input" id="npt-date" value="' + todayStr() + '"></div>' +
-      '<div class="dtr-field"><label class="dtr-label">Duration (minutes)</label><input type="number" class="dtr-input" id="npt-mins" min="1" max="480" placeholder="e.g. 30"></div>' +
-      '<div class="dtr-field" style="justify-content:flex-end"><button class="btn btn-primary" data-action="npt-log" style="align-self:flex-end">' + ic.add + ' Log Entry</button></div></div>' +
-      '<div class="dtr-field"><label class="dtr-label">Description</label><textarea class="dtr-input" id="npt-desc" placeholder="Brief description of the NPT reason..." rows="2" style="resize:none;min-height:52px"></textarea></div></div>' +
-      '<div class="card"><div class="card-title">My NPT Log</div>' +
+      '<div class="ph"><div class="ph-left"><div class="ph-title">Missed NPT Log</div>' +
+      '<div class="ph-sub">Log non-productive time entries · Maps to SharePoint \'NPT log\' list</div></div></div>' +
+
+      // Summary cards
+      '<div class="stats-grid sg3" style="margin-bottom:16px">' +
+      '<div class="stat-card ab"><div class="lbl">Total Entries</div><div class="val">' + myNPT.length + '</div></div>' +
+      '<div class="stat-card amb"><div class="lbl">Total Time</div><div class="val">' + (h>0?h+'h ':'')+m+'m</div></div>' +
+      '<div class="stat-card pb"><div class="lbl">This Month</div><div class="val">' + Math.floor(monthMins/60)+'h '+monthMins%60+'m</div></div>' +
+      '</div>' +
+
+      // Log form
+      '<div class="card" style="margin-bottom:16px">' +
+      '<div class="card-title" style="margin-bottom:14px">Log NPT Entry</div>' +
+
+      // NPT Type pills
+      '<div class="dtr-label" style="margin-bottom:8px">NPT Type <span class="req-star">*</span></div>' +
+      '<div class="npt-types" style="margin-bottom:14px">' +
+      NPT_TYPES.map(t =>
+        '<button class="npt-type-btn' + (nptActiveType===t?' active':'') + '" data-action="npt-type" data-val="' + t + '">' + t + '</button>'
+      ).join('') +
+      '</div>' +
+
+      // Date + Duration row
+      '<div class="g2" style="margin-bottom:12px">' +
+      '<div class="dtr-field"><label class="dtr-label">NPT Date <span class="req-star">*</span></label>' +
+      '<input type="date" class="dtr-input" id="npt-date" value="' + todayStr() + '"></div>' +
+      '<div class="dtr-field"><label class="dtr-label">Duration (minutes) <span class="req-star">*</span></label>' +
+      '<input type="number" class="dtr-input" id="npt-mins" min="1" max="480" placeholder="e.g. 30" style="font-family:var(--mono)"></div>' +
+      '</div>' +
+
+      // Employee name (read-only, auto-filled)
+      '<div class="dtr-field" style="margin-bottom:12px">' +
+      '<label class="dtr-label">Employee Name</label>' +
+      '<input class="dtr-input" value="' + authState.name + '" readonly style="cursor:default;color:var(--text2)"></div>' +
+
+      // Description
+      '<div class="dtr-field" style="margin-bottom:14px">' +
+      '<label class="dtr-label">Description <span class="req-star">*</span></label>' +
+      '<textarea class="dtr-input" id="npt-desc" rows="3" placeholder="Describe the reason for non-productive time..." style="resize:vertical;min-height:64px"></textarea></div>' +
+
+      // Submit button
+      '<button class="btn btn-primary btn-full" style="padding:11px" data-action="npt-log">' +
+      ic.add + ' Submit NPT Entry</button>' +
+      '</div>' +
+
+      // History table
+      '<div class="card"><div class="card-title" style="display:flex;justify-content:space-between;align-items:center">' +
+      '<span>My NPT History</span><span style="font-size:.78rem;color:var(--text3);font-weight:500">' + myNPT.length + ' entries</span></div>' +
       (myNPT.length ?
-        '<div class="npt-table-wrap"><table class="npt-table"><thead><tr><th>Date</th><th>Type</th><th>Duration</th><th>Description</th><th></th></tr></thead><tbody>' +
-        myNPT.slice().reverse().map(n => { const ri=nptCache.indexOf(n),mins=n.minutes||0,dh=Math.floor(mins/60),dm=mins%60; return '<tr><td>' + n.date + '</td><td><span class="badge bb">' + (n.type||'Other') + '</span></td><td class="mono">' + (dh>0?dh+'h ':'')+dm+'m</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (n.desc||'').replace(/"/g,'&quot;') + '">' + (n.desc||'—') + '</td><td><button class="btn btn-danger btn-xs" data-action="npt-del" data-idx="' + ri + '">' + ic.trash + '</button></td></tr>'; }).join('') +
+        '<div class="tbl-wrap"><table class="dtr-table">' +
+        '<thead><tr>' +
+        '<th>Date</th><th>Type</th><th>Duration</th><th>Description</th>' +
+        '<th style="width:40px;text-align:center">SP</th><th style="width:40px"></th>' +
+        '</tr></thead><tbody>' +
+        myNPT.slice().reverse().map(n => {
+          const ri   = nptCache.indexOf(n);
+          const mins = n.minutes || 0;
+          const dh   = Math.floor(mins/60), dm = mins%60;
+          const spOk = n.savedToSP === true;
+          return '<tr>' +
+            '<td class="mono" style="font-size:.84rem">' + n.date + '</td>' +
+            '<td><span class="badge bb" style="font-size:.75rem">' + (n.type||'Other') + '</span></td>' +
+            '<td class="mono">' + (dh>0?dh+'h ':'')+dm+'m</td>' +
+            '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem" title="' + (n.desc||'').replace(/"/g,'&quot;') + '">' + (n.desc||'—') + '</td>' +
+            '<td style="text-align:center;font-size:.8rem">' + (spOk ? '✅' : '<span style="color:var(--text3)" title="Saved locally — will sync when SP is available">⏳</span>') + '</td>' +
+            '<td><button class="btn btn-danger btn-xs" data-action="npt-del" data-idx="' + ri + '">' + ic.trash + '</button></td>' +
+            '</tr>';
+        }).join('') +
         '</tbody></table></div>' :
-        '<div class="empty"><p>No NPT entries yet. Log your first one above.</p></div>') +
+        '<div class="empty"><p>No NPT entries yet. Use the form above to log your first entry.</p></div>') +
       '</div>';
   }
 
   function nptSelectType(type) { nptActiveType = type; qa('.npt-type-btn').forEach(b => b.classList.toggle('active', b.dataset.val === type)); }
 
   async function nptLogEntry() {
-    const date=q('#npt-date')?.value||todayStr(), mins=parseInt(q('#npt-mins')?.value||'0'), desc=(q('#npt-desc')?.value||'').trim(), type=nptActiveType;
-    if (!type) { toast('Select an NPT type','err'); return; }
-    if (!mins||mins<1) { toast('Enter duration in minutes','err'); return; }
-    const entry = { name:authState.name, date, type, minutes:mins, desc, loggedAt:new Date().toISOString() };
-    nptCache.push(entry); safeSave('dtr_npt2', nptCache);
+    const date = q('#npt-date')?.value || todayStr();
+    const mins  = parseInt(q('#npt-mins')?.value || '0');
+    const desc  = (q('#npt-desc')?.value || '').trim();
+    const type  = nptActiveType;
+
+    // Validation
+    if (!type)       { toast('Select an NPT type first', 'err'); return; }
+    if (!mins||mins<1){ toast('Enter duration in minutes', 'err'); return; }
+    if (!desc)        { toast('Add a description', 'err'); return; }
+
+    // Disable button while submitting
+    const btn = q('[data-action="npt-log"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+
+    const entry = {
+      name:      authState.name,
+      date,
+      type,
+      minutes:   mins,
+      desc,
+      loggedAt:  nowUTC(),
+      savedToSP: false
+    };
+
+    // Save locally first
+    nptCache.push(entry);
+    safeSave('dtr_npt2', nptCache);
+
+    // Post to SharePoint
     const sent = await postNPT(entry);
-    toast(sent ? '✅ NPT logged — '+type+' ('+mins+'m)' : 'Saved locally (SP sync pending)', sent?'ok':'info');
-    nptActiveType = ''; renderMissedNPT();
+    if (sent) {
+      entry.savedToSP = true;
+      safeSave('dtr_npt2', nptCache);
+      toast('✅ NPT logged — ' + type + ' (' + mins + 'm) saved to SharePoint', 'ok');
+    } else {
+      toast('⏳ NPT saved locally — will sync when SP is available. Check Settings to retry.', 'info');
+    }
+
+    if (btn) { btn.disabled = false; btn.innerHTML = ic.add + ' Submit NPT Entry'; }
+    nptActiveType = '';
+    renderMissedNPT();
   }
 
   function nptDel(idx) { if (!confirm('Delete this NPT entry?')) return; nptCache.splice(idx,1); safeSave('dtr_npt2',nptCache); renderMissedNPT(); }
@@ -1387,6 +1832,7 @@
 'Admins can see the full team. All data is stored in: <code>' + SP.SITE + '</code></div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' +
       '<button class="btn btn-ghost btn-sm" data-action="test-sp">Test Connection</button>' +
+      '<button class="btn btn-ghost btn-sm" data-action="test-npt" style="border-color:rgba(163,113,247,.3);color:var(--accent2)">🧪 Test NPT Insert</button>' +
 '<button class="btn btn-ghost btn-sm" data-action="sync-my-data">' + ic.sync + ' Sync My Data</button>' +
       (qLen>0?'<button class="btn btn-ghost btn-sm" data-action="flush-queue">🔄 Retry '+qLen+' Queued</button>':'') + '</div>' +
       '<p style="font-size:.8rem;color:var(--text3)">' + (qLen===0?'✅ All synced':qLen+' pending sync') + '</p>' +
@@ -1394,7 +1840,7 @@
       '<div style="margin-top:6px;font-size:.78rem;color:var(--text3);line-height:2">' +
       '📋 Task List: <code style="color:var(--accent)">' + SP.TASK_LIST + '</code><br>' +
       '📅 Attendance List: <code style="color:var(--accent)">' + SP.STATUS_LIST + '</code> (columns: EmployeeName, StatusDate, WorkStatus, Process, TaskNotes, UpdatedAt)<br>' +
-      '⏱ NPT List: <code style="color:var(--accent)">' + SP.NPT_LIST + '</code> (columns: EmployeeName, NPTDate, NPTType, DurationMins, Description, LoggedAt)</div></div></div>' +
+      '⏱ NPT List: <code style="color:var(--accent)">' + SP.NPT_LIST + '</code> (columns: Title, EmployeeName, NPTDate, NPTType, DurationMins, Description, LoggedAt)</div></div></div>' +
       '<div class="card"><div class="card-title">🗑 My Data</div>' +
       '<div style="font-size:.82rem;color:var(--text2);margin-bottom:10px">' +
       mySubmissions().length + ' task entries · ' + Object.keys(statusCache).length + ' attendance days · ' + nptCache.filter(n=>n.name===authState.name).length + ' NPT entries</div>' +
@@ -1417,28 +1863,36 @@
         method: 'POST',
         url: SP.SITE + '/_api/contextinfo',
         headers: {
-          'Accept': 'application/json;odata=verbose',
+          'Accept':       'application/json;odata=verbose',
           'Content-Type': 'application/json;odata=verbose'
         },
         withCredentials: true,
         onload: res => {
           try {
             if (res.status === 401 || res.status === 403) {
-              toast('❌ SP auth error (' + res.status + ') — make sure you are logged into SharePoint in this browser', 'err');
+              toast('❌ SP auth error — open ' + SP.SITE + ' in a tab and log in first', 'err');
               resolve(null); return;
             }
-            const data = JSON.parse(res.responseText);
-            const token = data.d.GetContextWebInformation.FormDigestValue;
-            if (!token) { toast('❌ SP token empty — check SP site URL', 'err'); resolve(null); return; }
-            console.log('[WorkPulse] SP auth token OK, length:', token.length);
+            const info  = JSON.parse(res.responseText).d.GetContextWebInformation;
+            const token = info.FormDigestValue;
+            if (!token) { toast('❌ SP digest empty', 'err'); resolve(null); return; }
+            // Validate digest is scoped to our subsite not root tenant
+            const webUrl = (info.WebFullUrl || '').toLowerCase();
+            if (webUrl && !webUrl.includes('teamdailytask')) {
+              toast('❌ SP session wrong scope (' + webUrl + '). Open ' + SP.SITE + ' in a tab first.', 'err');
+              console.error('[WorkPulse] Wrong digest scope:', webUrl);
+              resolve(null); return;
+            }
+            console.log('[WorkPulse] ✅ SP digest OK, scope:', webUrl || 'ok', 'length:', token.length);
             resolve(token);
           } catch(ex) {
-            toast('❌ SP contextinfo failed (status ' + res.status + ') — ' + res.responseText.slice(0,80), 'err');
+            toast('❌ SP contextinfo failed (' + res.status + ')', 'err');
+            console.error('[WorkPulse] getDigest error:', ex, res.responseText.slice(0,200));
             resolve(null);
           }
         },
-        onerror: (err) => {
-          toast('❌ Cannot reach SharePoint — network error. Open SP site in a tab first.', 'err');
+        onerror: () => {
+          toast('❌ Cannot reach SP. Open ' + SP.SITE + ' in a tab first.', 'err');
           resolve(null);
         }
       });
@@ -1470,9 +1924,10 @@
             let msg = '';
             try {
               const j = JSON.parse(res.responseText);
-              msg = (j.error && j.error.message) ? (j.error.message.value || j.error.message) : res.responseText.slice(0,120);
-            } catch { msg = res.responseText.slice(0, 120); }
-            toast('❌ [' + listName + '] ' + res.status + ': ' + msg.slice(0, 100), 'err');
+              msg = (j.error && j.error.message) ? (j.error.message.value || JSON.stringify(j.error.message)) : res.responseText.slice(0,200);
+            } catch { msg = res.responseText.slice(0, 200); }
+            console.error('[WorkPulse] spInsert FULL error [' + listName + ']:', res.status, msg);
+            toast('❌ SP Error [' + listName + '] ' + res.status + ': ' + msg.slice(0, 120), 'err');
             resolve(false);
           }
         },
@@ -1531,53 +1986,108 @@
     });
   }
 
-  async function postTask(t) {
-    return spPost(SP.TASK_LIST, {
-      '__metadata': { 'type': 'SP.Data.' + SP.TASK_LIST + 'ListItem' },
-      'EmployeeName': t.employeeName || '', 'TaskType': t.taskType || '',
-      'HoursWorked': t.hours || 0, 'NPTHours': t.npt || 0,
-      'WorkType': t.workType || 'Productive', 'AdHocDetails': t.adhoc || '',
-      'TaskDate': t.date || '', 'SubmittedAt': t.submittedAt || new Date().toISOString()
-    });
-  }
-
-  // Cache the NPT list entity type so we only fetch it once
-  let _nptListType = '';
-
-  async function getNPTListType() {
-    if (_nptListType) return _nptListType;
+  // Dynamic list type cache — fetched once per session
+  async function getListType(listName, key) {
+    if (_listTypes[key]) return _listTypes[key];
     return new Promise(resolve => {
       GM_xmlhttpRequest({
         method: 'GET',
-        url: SP.SITE + "/_api/web/lists/GetByTitle('" + SP.NPT_LIST + "')?$select=ListItemEntityTypeFullName",
-        headers: {'Accept': 'application/json;odata=verbose'},
+        url: SP.SITE + "/_api/web/lists/GetByTitle('" + listName + "')?$select=ListItemEntityTypeFullName",
+        headers: {
+          'Accept': 'application/json;odata=verbose'
+        },
         withCredentials: true,
         onload: res => {
-          try {
-            _nptListType = JSON.parse(res.responseText).d.ListItemEntityTypeFullName;
-            resolve(_nptListType);
-          } catch { resolve('SP.Data.NPTLogListItem'); } // fallback
+          if (res.status >= 200 && res.status < 300) {
+            try {
+              const fetched = JSON.parse(res.responseText).d.ListItemEntityTypeFullName;
+              if (fetched) {
+                _listTypes[key] = fetched;
+                console.log('[WorkPulse] ✅ List type fetched —', listName, ':', fetched);
+                resolve(fetched);
+                return;
+              }
+            } catch(ex) {
+              console.error('[WorkPulse] getListType parse error:', listName, ex.message, res.responseText.slice(0,200));
+            }
+          } else {
+            console.error('[WorkPulse] getListType HTTP', res.status, 'for', listName, '— response:', res.responseText.slice(0,200));
+          }
+          // Fallback: use standard SP naming convention
+          const fallback = 'SP.Data.' + listName.replace(/[^a-zA-Z0-9]/g,'') + 'ListItem';
+          _listTypes[key] = fallback;
+          console.warn('[WorkPulse] getListType fallback for', listName, ':', fallback);
+          resolve(fallback);
         },
-        onerror: () => resolve('SP.Data.NPTLogListItem')
+        onerror: (err) => {
+          const fallback = 'SP.Data.' + listName.replace(/[^a-zA-Z0-9]/g,'') + 'ListItem';
+          _listTypes[key] = fallback;
+          console.error('[WorkPulse] getListType network error for', listName, err);
+          resolve(fallback);
+        }
       });
     });
+  }
+  async function getTaskListType() { return getListType(SP.TASK_LIST, 'task'); }
+  async function getAttListType()  { return getListType(SP.STATUS_LIST, 'att'); }
+
+  async function postTask(t) {
+    // ── Exact v2.10.0 logic — uses spInsert() for full error surfacing ──
+    const type = await getTaskListType();
+    if (!type) { console.warn('[WorkPulse] postTask: could not get list type'); return false; }
+
+    // Build body with only columns that exist in the DailyTaskReport SP list
+    const body = {
+      'Title':        (t.employeeName || authState.name || '') + '_' + (t.date || todayStr()),
+      'EmployeeName': t.employeeName  || authState.name || '',
+      'TaskType':     t.taskType      || '',
+      'HoursWorked':  parseFloat(t.hours) || 0,
+      'NPTHours':     parseFloat(t.npt)   || 0,
+      'WorkType':     t.workType      || 'Productive',
+      'AdHocDetails': t.adhoc         || '',
+      'TaskDate':     localDateSP(t.date || todayStr()),
+      'SubmittedAt':  t.submittedAt   || nowUTC()
+    };
+
+    // Only add Shift if SP list has that column — check via _listTypes cache
+    // We try without it first (safe); if you add Shift column to SP, it will auto-work
+    // via the shift field on the task object being available
+
+    console.log('[WorkPulse] postTask → spInsert:', SP.TASK_LIST, body);
+    const ok = await spInsert(SP.TASK_LIST, type, body);
+    if (ok) {
+      console.log('[WorkPulse] ✅ Task saved to SP:', t.employeeName, t.taskType, t.date);
+    } else {
+      console.warn('[WorkPulse] ⚠ Task failed SP save — queued for retry');
+    }
+    return ok;
+  }
+
+  // Cache the NPT list entity type so we only fetch it once
+  // getNPTListType delegates to the authenticated getListType() cache
+  async function getNPTListType() {
+    return getListType(SP.NPT_LIST, 'npt');
   }
 
   async function postNPT(e) {
     const token = await getDigest();
-    if (!token) return false;
+    if (!token) { console.warn('[WorkPulse] postNPT: no digest token'); return false; }
     const listType = await getNPTListType();
     const dateStr  = e.date || todayStr();
-    const body = {
-      '__metadata': { 'type': listType },
-      'Title':        (e.type || 'NPT') + ' - ' + dateStr,
-      'EmployeeName': e.name || '',
-      'NPTDate':      dateStr + 'T00:00:00Z',
-      'NPTType':      e.type || '',
+    const bodyData = {
+      'Title':        (e.type || 'NPT') + ' - ' + (e.name || authState.name || '') + ' - ' + dateStr,
+      'EmployeeName': e.name      || authState.name || '',
+      'NPTDate':      localDateSP(dateStr),
+      'NPTType':      e.type      || '',
       'DurationMins': parseInt(e.minutes) || 0,
-      'Description':  e.desc || '',
-      'LoggedAt':     e.loggedAt || new Date().toISOString()
+      'Description':  e.desc      || '',
+      'LoggedAt':     e.loggedAt  || nowUTC()
     };
+    // Add __metadata only if we have a real list type (not empty)
+    const fullBody = listType
+      ? Object.assign({ '__metadata': { 'type': listType } }, bodyData)
+      : bodyData;
+    console.log('[WorkPulse] postNPT → POST to', SP.NPT_LIST, '| type:', listType || 'none', '| body:', bodyData);
     return new Promise(resolve => {
       GM_xmlhttpRequest({
         method: 'POST',
@@ -1587,21 +2097,29 @@
           'Content-Type':    'application/json;odata=verbose',
           'X-RequestDigest': token
         },
-        data: JSON.stringify(body),
+        data: JSON.stringify(fullBody),
         withCredentials: true,
         onload: res => {
+          console.log('[WorkPulse] postNPT response:', res.status, res.responseText.slice(0,400));
           if (res.status >= 200 && res.status < 300) {
+            console.log('[WorkPulse] ✅ NPT saved to SP:', e.type, e.minutes+'m', dateStr);
             resolve(true);
           } else {
             let msg = '';
-            try { msg = JSON.parse(res.responseText).error.message.value || ''; } catch {}
-            toast('❌ NPT failed (' + res.status + ')' + (msg ? ': ' + msg.slice(0,80) : '') + ' — check F12 console', 'err');
-            console.error('[WorkPulse] NPT error:', res.status, res.responseText);
+            try {
+              const j = JSON.parse(res.responseText);
+              msg = (j.error && j.error.message)
+                ? (j.error.message.value || JSON.stringify(j.error.message))
+                : res.responseText.slice(0, 300);
+            } catch { msg = res.responseText.slice(0, 300); }
+            console.error('[WorkPulse] postNPT FAILED:', res.status, msg);
+            toast('❌ NPT save failed (' + res.status + '): ' + msg.slice(0, 150), 'err');
             resolve(false);
           }
         },
         onerror: err => {
-          toast('❌ NPT network error — is SP open in another tab?', 'err');
+          console.error('[WorkPulse] postNPT network error:', err);
+          toast('❌ NPT network error — is SP open in a tab?', 'err');
           resolve(false);
         }
       });
@@ -1609,15 +2127,20 @@
   }
 
   async function postAttendance(e) {
-    const spDate  = (e.date || todayStr()) + 'T00:00:00Z';
-    const title   = (e.name || '') + ' - ' + (e.date || todayStr());
-    const nameEsc = (e.name || '').replace(/'/g, "''");
+    const dateStr  = e.date || todayStr();
+    const spDate   = localDateSP(dateStr);   // UTC ISO for SP storage
+    const dateOnly = dateStr;                 // YYYY-MM-DD for filter
+    const title    = (e.name || '') + ' - ' + dateStr;
+    const nameEsc  = (e.name || '').replace(/'/g, "''");
+    // Filter by date range (start of day to end of day in UTC)
+    const dayStart = new Date(dateStr + 'T00:00:00').toISOString();
+    const dayEnd   = new Date(dateStr + 'T23:59:59').toISOString();
     // Check if record exists for this person+date
     return new Promise(resolve => {
       GM_xmlhttpRequest({
         method: 'GET',
         url: SP.SITE + "/_api/web/lists/GetByTitle('" + SP.STATUS_LIST + "')/items" +
-             "?$filter=EmployeeName eq '" + nameEsc + "' and StatusDate eq datetime'" + spDate + "'&$select=Id&$top=1",
+             "?$filter=EmployeeName eq '" + nameEsc + "' and StatusDate ge datetime'" + dayStart + "' and StatusDate le datetime'" + dayEnd + "'&$select=Id&$top=1",
         headers: { 'Accept': 'application/json;odata=verbose' },
         withCredentials: true,
         onload: async res => {
@@ -1625,14 +2148,16 @@
             const results = (JSON.parse(res.responseText).d || {}).results || [];
             const body = {
               'Title':        title,
-              'EmployeeName': e.name || '',
+              'EmployeeName': e.name     || '',
               'StatusDate':   spDate,
-              'WorkStatus':   e.status || '',
-              'Process':      e.process || '',
-              'TaskNotes':    e.task || '',
-              'UpdatedAt':    e.updatedAt || new Date().toISOString()
+              'WorkStatus':   e.status   || '',
+              'Process':      e.process  || '',
+              'TaskNotes':    e.task     || '',
+              'Shift':        e.shift    || '',
+              'UpdatedAt':    e.updatedAt || nowUTC()
             };
-            const meta = 'SP.Data.AttendanceStatusListItem';
+            // Use dynamic list type (fetched once, cached)
+            const meta = await getAttListType();
             if (results.length > 0) {
               resolve(await spUpdate(SP.STATUS_LIST, results[0].Id, meta, body));
             } else {
@@ -1660,6 +2185,106 @@
     await flushQueue();
     const r = safeLoad('dtr_spq2', []).length;
     toast(r === 0 ? '✅ All synced' : '⚠️ ' + r + ' still pending', r === 0 ? 'ok' : 'err');
+  }
+
+  async function testNPTConnection() {
+    toast('Step 1/4 — Getting SP auth token...', 'info');
+
+    // ── Step 1: Get digest ───────────────────────────────────────────────
+    const token = await getDigest();
+    if (!token) {
+      toast('❌ Step 1 FAILED — No SP token. Open ' + SP.SITE + ' in a tab first.', 'err');
+      return;
+    }
+    toast('✅ Step 1 — Auth token OK. Step 2/4 — Fetching list type...', 'ok');
+
+    // ── Step 2: Fetch real list type ─────────────────────────────────────
+    _listTypes.npt = ''; // clear cache
+    const listType = await getListType(SP.NPT_LIST, 'npt');
+    console.log('[WorkPulse] NPT list type fetched:', listType, '| List:', SP.NPT_LIST);
+    toast('✅ Step 2 — List type: ' + listType + '. Step 3/4 — Verifying list exists...', 'ok');
+
+    // ── Step 3: Verify list exists by fetching its info ──────────────────
+    const listOk = await new Promise(resolve => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: SP.SITE + "/_api/web/lists/GetByTitle('" + SP.NPT_LIST + "')?$select=ItemCount",
+        headers: { 'Accept': 'application/json;odata=verbose' },
+        withCredentials: true,
+        onload: res => {
+          if (res.status >= 200 && res.status < 300) {
+            try {
+              const cnt = JSON.parse(res.responseText).d.ItemCount;
+              toast('✅ Step 3 — List \''+SP.NPT_LIST+'\' found ('+cnt+' items). Step 4/4 — Inserting...', 'ok');
+              resolve(true);
+            } catch(ex) {
+              toast('❌ Step 3 — List found but response parse failed: ' + ex.message, 'err');
+              resolve(false);
+            }
+          } else {
+            let msg='';
+            try { msg=JSON.parse(res.responseText).error.message.value||''; } catch{}
+            toast('❌ Step 3 — List NOT found ('+res.status+'): '+(msg||'List name may be wrong. Current: \''+SP.NPT_LIST+'\''), 'err');
+            console.error('[WorkPulse] List check failed:', res.status, res.responseText.slice(0,300));
+            resolve(false);
+          }
+        },
+        onerror: () => { toast('❌ Step 3 — Network error checking list', 'err'); resolve(false); }
+      });
+    });
+    if (!listOk) return;
+
+    // ── Step 4: Direct POST insert (minimal body, no __metadata first) ───
+    // Try without __metadata first — some SP configs accept this
+    const bodyNoMeta = JSON.stringify({
+      'Title':        'TEST-DELETE-ME ' + new Date().toISOString(),
+      'EmployeeName': authState.name || 'Test',
+      'NPTDate':      localDateSP(todayStr()),
+      'NPTType':      'System Issue',
+      'DurationMins': 1,
+      'Description':  'WorkPulse connection test — safe to delete',
+      'LoggedAt':     nowUTC()
+    });
+
+    const insertUrl = SP.SITE + "/_api/web/lists/GetByTitle('" + SP.NPT_LIST + "')/items";
+
+    // First try: with __metadata (standard)
+    const bodyWithMeta = JSON.stringify(Object.assign({ '__metadata': { 'type': listType } }, JSON.parse(bodyNoMeta)));
+
+    await new Promise(resolve => {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: insertUrl,
+        headers: {
+          'Accept':          'application/json;odata=verbose',
+          'Content-Type':    'application/json;odata=verbose',
+          'X-RequestDigest': token
+        },
+        data: bodyWithMeta,
+        withCredentials: true,
+        onload: res => {
+          console.log('[WorkPulse] NPT test insert response:', res.status, res.responseText.slice(0,500));
+          if (res.status >= 200 && res.status < 300) {
+            toast('✅ NPT INSERT SUCCESS! (\''+SP.NPT_LIST+'\' with type '+listType+'). Delete TEST item from SP.', 'ok');
+          } else {
+            // Extract full SP error
+            let msg = res.responseText;
+            try {
+              const j = JSON.parse(res.responseText);
+              msg = (j.error && j.error.message) ? (j.error.message.value || JSON.stringify(j.error.message)) : msg;
+            } catch {}
+            console.error('[WorkPulse] Insert FAILED:', res.status, msg);
+            toast('❌ INSERT FAILED ('+res.status+'): '+msg.slice(0,150), 'err');
+          }
+          resolve();
+        },
+        onerror: err => {
+          console.error('[WorkPulse] Insert network error:', err);
+          toast('❌ Network error during insert', 'err');
+          resolve();
+        }
+      });
+    });
   }
 
   async function testSP() {
@@ -1802,32 +2427,42 @@
   }
 
   function fetchOwnNPT(silent) {
-    // Fetch only THIS associate's NPT entries from SP
     if (!authState.name) return;
     const nameEsc = authState.name.replace(/'/g, "''");
+    // No $select — fetch all columns so missing columns don't cause errors
     const url = SP.SITE + "/_api/web/lists/GetByTitle('" + SP.NPT_LIST + "')/items" +
       "?$filter=EmployeeName eq '" + nameEsc + "'" +
-      "&$top=500&$orderby=NPTDate desc" +
-      "&$select=EmployeeName,NPTDate,NPTType,DurationMins,Description,LoggedAt";
+      "&$top=500&$orderby=Created desc";
     GM_xmlhttpRequest({
-      method: 'GET', url: url,
-      headers: {'Accept': 'application/json;odata=verbose'},
+      method: 'GET', url,
+      headers: { 'Accept': 'application/json;odata=verbose' },
       withCredentials: true,
       onload: res => {
+        // Check HTTP status first
+        if (res.status < 200 || res.status >= 300) {
+          let spErr = '';
+          try { spErr = JSON.parse(res.responseText).error.message.value || ''; } catch {}
+          console.error('[WorkPulse] fetchOwnNPT HTTP', res.status, spErr || res.responseText.slice(0,200));
+          if (!silent) toast('❌ NPT sync failed (' + res.status + '): ' + (spErr||'check F12 console'), 'err');
+          return;
+        }
         try {
-          const items = JSON.parse(res.responseText).d.results || [];
-          const existingKeys = new Set(nptCache.map(n => (n.name||'') + '::' + (n.loggedAt||'')));
+          const parsed = JSON.parse(res.responseText);
+          const items  = (parsed.d && parsed.d.results) ? parsed.d.results : [];
+          const existingKeys = new Set(nptCache.map(n => (n.name||'')+'::'+((n.loggedAt||n.Created||''))));
           let added = 0;
           items.forEach(it => {
-            const key = (it.EmployeeName||'') + '::' + (it.LoggedAt||it.Created||'');
+            const loggedAt = it.LoggedAt || it.Created || '';
+            const key = (it.EmployeeName||'') + '::' + loggedAt;
             if (!existingKeys.has(key)) {
               nptCache.push({
-                name:     it.EmployeeName||'',
-                date:     (it.NPTDate||'').split('T')[0],
-                type:     it.NPTType||'',
-                minutes:  it.DurationMins||0,
-                desc:     it.Description||'',
-                loggedAt: it.LoggedAt||it.Created||''
+                name:      it.EmployeeName || authState.name,
+                date:      (it.NPTDate || it.Created || '').split('T')[0],
+                type:      it.NPTType      || '',
+                minutes:   parseInt(it.DurationMins) || 0,
+                desc:      it.Description  || '',
+                loggedAt,
+                savedToSP: true
               });
               added++;
             }
@@ -1836,16 +2471,328 @@
             safeSave('dtr_npt2', nptCache);
             if (currentView === 'missednpt') renderMissedNPT();
           }
-          if (!silent) toast('✅ NPT log synced from SharePoint', 'ok');
+          if (!silent) toast('✅ NPT synced — ' + items.length + ' entries from SP', 'ok');
+          console.log('[WorkPulse] fetchOwnNPT:', items.length, 'items from SP');
         } catch(ex) {
-          if (!silent) toast('❌ NPT sync error: ' + ex.message, 'err');
+          console.error('[WorkPulse] fetchOwnNPT parse error:', ex.message, res.responseText.slice(0,300));
+          if (!silent) toast('❌ NPT parse error: ' + ex.message, 'err');
         }
       },
-      onerror: () => { if (!silent) toast('❌ Cannot reach SharePoint', 'err'); }
+      onerror: () => {
+        console.error('[WorkPulse] fetchOwnNPT: network error');
+        if (!silent) toast('❌ Cannot reach SP for NPT sync', 'err');
+      }
     });
   }
   // flushQueue defined above
   // flushQueueManual defined above
+
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ADMIN PORTAL FUNCTIONS
+  // ═══════════════════════════════════════════════════════════════════════
+
+  function getAllMembers() {
+    const fromSubs = [...new Set((Array.isArray(submissions)?submissions:[]).map(s=>s.employeeName).filter(Boolean))];
+    const fromAtt  = [...new Set(Object.keys(teamStatusCache_adm).map(k=>k.split('::')[0]).filter(Boolean))];
+    const fromNPT  = [...new Set((Array.isArray(nptAllCache)?nptAllCache:[]).map(n=>n.name||n.employeeName).filter(Boolean))];
+    return [...new Set([...fromSubs,...fromAtt,...fromNPT,...ASSOCIATES])].sort();
+  }
+
+  function calcTeamAvgProd(subs) {
+    const members=[...new Set(subs.map(s=>s.employeeName).filter(Boolean))];
+    if(!members.length) return 0;
+    return members.reduce((a,m)=>a+calcAvgProd(subs.filter(s=>s.employeeName===m)),0)/members.length;
+  }
+
+  function getTeamShift(user,dk)   { return(teamStatusCache_adm[user+'::'+dk]||{}).shift||''; }
+
+  function renderAdminOverview() {
+    const el = q('#view-overview'); if (!el) return;
+    const subs    = Array.isArray(submissions) ? submissions : [];
+    const members = getAllMembers();
+    const today   = todayStr();
+    const d       = new Date();
+    const dayStr  = d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+    const todaySubs = subs.filter(s=>s.date===today);
+    const wfoCnt  = members.filter(m=>getTeamStatus(m,today)==='WFO').length;
+    const wfhCnt  = members.filter(m=>getTeamStatus(m,today)==='WFH').length;
+    const lvCnt   = members.filter(m=>['SL','CL','AL'].includes(getTeamStatus(m,today))).length;
+    const markd   = members.filter(m=>getTeamStatus(m,today)).length;
+    const pendCnt = members.length - markd;
+    const totalH  = subs.reduce((a,s)=>a+(parseFloat(s.hours)||0),0);
+    const avgProd = calcTeamAvgProd(subs);
+    const pc      = avgProd>=75?'var(--green)':avgProd>=50?'var(--amber)':'var(--red)';
+    const circ    = 2*Math.PI*52, off=circ-(avgProd/100)*circ;
+
+    const memberStats = members.map(m => {
+      const ms=subs.filter(s=>s.employeeName===m);
+      const st=getTeamStatus(m,today), sh=getTeamShift(m,today);
+      const ini=m.split(/[\s,]+/).filter(Boolean).map(x=>x[0].toUpperCase()).join('').slice(0,2);
+      return {m,ini,count:ms.length,prod:calcAvgProd(ms),todaySt:st,shift:sh};
+    }).sort((a,b)=>b.prod-a.prod);
+
+    el.innerHTML =
+      '<div class="ph"><div class="ph-left"><div class="ph-title">Team Overview</div>' +
+      '<div class="ph-sub">'+dayStr+'</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-sync-all">'+ic.sync+' Sync All</button></div></div>' +
+      (members.length===0 ? '<div class="warn-banner">⚠ No team data. Click Sync All to load from SharePoint.</div>' : '') +
+      // Banner stats
+      '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px">' +
+      [['Members',members.length,'var(--accent)'],['WFO Today',wfoCnt,'#3fb950'],['WFH Today',wfhCnt,'#22d3ee'],['On Leave',lvCnt,'var(--amber)'],['Not Marked',pendCnt,'var(--red)'],['Total Hours',totalH.toFixed(0)+'h','var(--text)']].map(([l,n,c])=>
+        '<div style="background:var(--bg2);padding:18px 12px;text-align:center"><div style="font-size:1.8rem;font-weight:800;color:'+c+';letter-spacing:-1px">'+n+'</div><div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.7px;color:var(--text3);margin-top:3px">'+l+'</div></div>'
+      ).join('')+'</div>'+
+      '<div class="g2" style="margin-bottom:16px">' +
+      // Donut
+      '<div class="card"><div class="chart-title" style="display:flex;justify-content:space-between"><span>Team Productivity</span><span style="color:'+pc+';font-weight:800">'+avgProd.toFixed(0)+'%</span></div>'+
+      '<div style="display:flex;align-items:center;gap:20px;padding:8px 0">'+
+      '<div style="position:relative;width:120px;height:120px;flex-shrink:0">'+
+      '<svg width="120" height="120" viewBox="0 0 120 120" style="transform:rotate(-90deg)">'+
+      '<circle cx="60" cy="60" r="52" fill="none" stroke="var(--bg4)" stroke-width="12"/>'+
+      '<circle cx="60" cy="60" r="52" fill="none" stroke="'+pc+'" stroke-width="12" stroke-dasharray="'+circ.toFixed(1)+'" stroke-dashoffset="'+off.toFixed(1)+'" stroke-linecap="round" style="transition:stroke-dashoffset 1s ease"/></svg>'+
+      '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">'+
+      '<div style="font-size:1.5rem;font-weight:800;color:'+pc+'">'+avgProd.toFixed(0)+'%</div>'+
+      '<div style="font-size:.65rem;color:var(--text3)">avg</div></div></div>'+
+      '<div style="display:flex;flex-direction:column;gap:7px;flex:1">' +
+      [['WFO','#3fb950',wfoCnt],['WFH','#22d3ee',wfhCnt],['Leave','var(--amber)',lvCnt],['Pending','var(--text3)',pendCnt]].map(([l,c,n])=>
+        '<div style="display:flex;align-items:center;gap:8px;font-size:.8rem;color:var(--text2)"><span style="width:10px;height:10px;border-radius:3px;background:'+c+';flex-shrink:0;display:inline-block"></span>'+l+'<span style="margin-left:auto;font-weight:700;color:var(--text)">'+n+'</span></div>'
+      ).join('')+'</div></div></div>'+
+      // Submissions today
+      '<div class="card"><div class="chart-title">Today\'s Progress</div>'+
+      '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:5px"><span style="color:var(--text2)">Submitted today</span><span style="font-weight:700">'+todaySubs.length+'/'+members.length+'</span></div>'+
+      '<div style="height:8px;background:var(--bg4);border-radius:4px;overflow:hidden"><div style="height:100%;width:'+Math.round((todaySubs.length/Math.max(members.length,1))*100)+'%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:4px;transition:width .8s"></div></div></div>'+
+      '<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:5px"><span style="color:var(--text2)">Attendance marked</span><span style="font-weight:700">'+markd+'/'+members.length+'</span></div>'+
+      '<div style="height:8px;background:var(--bg4);border-radius:4px;overflow:hidden"><div style="height:100%;width:'+Math.round((markd/Math.max(members.length,1))*100)+'%;background:linear-gradient(90deg,#3fb950,#22d3ee);border-radius:4px;transition:width .8s"></div></div></div>'+
+      '<div style="display:flex;gap:4px;height:28px;border-radius:8px;overflow:hidden;margin-top:8px">'+
+      [['#3fb950',wfoCnt,'WFO'],['#22d3ee',wfhCnt,'WFH'],['var(--amber)',lvCnt,'Leave'],['var(--bg4)',pendCnt,'Pending']].map(([c,n,l])=>
+        n>0?'<div title="'+l+': '+n+'" style="background:'+c+';flex:'+n+';display:flex;align-items:center;justify-content:center;font-size:.65rem;font-weight:700;color:#fff">'+(n>1?n:'')+'</div>':''
+      ).join('')+'</div></div></div>'+
+      // Members grid
+      '<div style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin:4px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)">All Members — '+members.length+'</div>'+
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:9px">' +
+      (memberStats.length ? memberStats.map(s=>{
+        const pc2=s.prod>=75?'var(--green)':s.prod>=50?'var(--amber)':'var(--red)';
+        const stCfg=STATUS_CFG[s.todaySt]||{};
+        return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;transition:all .15s" onmouseover="this.style.borderColor=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\'">' +
+          '<div style="width:34px;height:34px;border-radius:9px;background:var(--bg4);color:var(--text2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">'+s.ini+'</div>' +
+          '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:.83rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+s.m+'</div>' +
+          '<div style="font-size:.72rem;color:var(--text3)">'+s.count+' entries · <span style="color:'+pc2+';font-weight:700">'+s.prod.toFixed(0)+'%</span>' + (s.shift?' · '+s.shift:'') + '</div>' +
+          '</div>' +
+          (s.todaySt?'<span class="sp sp-'+s.todaySt.toLowerCase().replace(' ','-')+'" style="font-size:.65rem">'+s.todaySt+'</span>':'<span class="sp sp-ns" style="font-size:.65rem">—</span>') +
+          '</div>';
+      }).join('') : '<div class="empty"><p>No members yet. Sync from SharePoint.</p></div>') +
+      '</div>';
+  }
+
+  function renderAdminTeamTracker() {
+    const el = q('#view-teamtrack'); if (!el) return;
+    const nameF = (q('#adm-tk-name')?.value||'').toLowerCase();
+    const typeF = q('#adm-tk-type')?.value||'';
+    const taskF = q('#adm-tk-task')?.value||'';
+    const sortF = q('#adm-tk-sort')?.value||'date';
+    const subs  = Array.isArray(submissions) ? submissions : [];
+    let rows = subs
+      .filter(s => !nameF || (s.employeeName||'').toLowerCase().includes(nameF))
+      .filter(s => !typeF || s.workType===typeF)
+      .filter(s => !taskF || s.taskType===taskF);
+    if (sortF==='hours')    rows.sort((a,b)=>parseFloat(b.hours||0)-parseFloat(a.hours||0));
+    else if (sortF==='name') rows.sort((a,b)=>(a.employeeName||'').localeCompare(b.employeeName||''));
+    else                    rows.sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+    const totalH = rows.reduce((a,r)=>a+parseFloat(r.hours||0),0);
+    const nptH   = rows.reduce((a,r)=>a+parseFloat(r.npt||0),0);
+    el.innerHTML =
+      '<div class="ph"><div class="ph-left"><div class="ph-title">Team Tracker</div>' +
+      '<div class="ph-sub">'+rows.length+' entries across '+getAllMembers().length+' members</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-sync-tasks">'+ic.sync+' Sync</button></div></div>' +
+      '<div class="stats-grid sg4" style="margin-bottom:12px">' +
+      '<div class="stat-card ab"><div class="lbl">Entries</div><div class="val">'+rows.length+'</div></div>' +
+      '<div class="stat-card gb"><div class="lbl">Total Hours</div><div class="val">'+totalH.toFixed(1)+'h</div></div>' +
+      '<div class="stat-card amb"><div class="lbl">NPT Hours</div><div class="val">'+nptH.toFixed(1)+'h</div></div>' +
+      '<div class="stat-card pb"><div class="lbl">Members</div><div class="val">'+getAllMembers().length+'</div></div></div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
+      '<input id="adm-tk-name" class="dtr-input" placeholder="Filter by name..." style="max-width:180px" value="'+(nameF||'')+'">'+
+      '<select id="adm-tk-type" class="dtr-select" style="max-width:150px"><option value="">All Work Types</option><option value="Productive"'+(typeF==='Productive'?' selected':'')+'>Productive</option><option value="NPT"'+(typeF==='NPT'?' selected':'')+'>NPT</option></select>'+
+      '<select id="adm-tk-task" class="dtr-select" style="max-width:170px"><option value="">All Task Types</option>'+TASK_TYPES.map(t=>'<option value="'+t+'"'+(taskF===t?' selected':'')+'>'+t+'</option>').join('')+'</select>'+
+      '<select id="adm-tk-sort" class="dtr-select" style="max-width:140px"><option value="date"'+(sortF==='date'?' selected':'')+'>Sort: Latest</option><option value="name"'+(sortF==='name'?' selected':'')+'>Sort: Name</option><option value="hours"'+(sortF==='hours'?' selected':'')+'>Sort: Hours</option></select>'+
+      '</div>'+
+      '<div class="tbl-wrap"><table class="dtr-table"><thead><tr>' +
+      '<th>#</th><th>Date</th><th>Employee</th><th>Task Type</th><th>Work Type</th><th>Hours</th><th>NPT Hrs</th><th>Shift</th><th>Notes</th><th>Submitted</th>' +
+      '</tr></thead><tbody>' +
+      (rows.length ? rows.map((r,i)=>'<tr><td style="color:var(--text3)">'+(i+1)+'</td>'+
+        '<td>'+r.date+'</td><td class="bold">'+r.employeeName+'</td>' +
+        '<td style="font-weight:600">'+r.taskType+'</td>' +
+        '<td><span class="badge '+(r.workType==='NPT'?'ba':'bg2')+'">'+r.workType+'</span></td>' +
+        '<td class="mono">'+parseFloat(r.hours||0).toFixed(1)+'</td>' +
+        '<td class="mono"'+(parseFloat(r.npt||0)>0?' style="color:var(--amber)"':'')+'>'+parseFloat(r.npt||0).toFixed(1)+'</td>' +
+        '<td>'+(r.shift||'—')+'</td>' +
+        '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(r.adhoc||'').replace(/"/g,"&quot;")+'">'+(r.adhoc||'—')+'</td>' +
+        '<td style="font-size:.8rem;color:var(--text3)">'+formatSPTime(r.submittedAt)+'</td>' +
+        '</tr>').join('') :
+        '<tr><td colspan="10"><div class="empty"><p>No entries. Sync from SP or check filters.</p></div></td></tr>') +
+      '</tbody></table></div>';
+
+    // Wire filters
+    ['#adm-tk-name','#adm-tk-type','#adm-tk-task','#adm-tk-sort'].forEach(sel=>{
+      const inp=el.querySelector(sel);
+      if(inp) inp.addEventListener(sel==='#adm-tk-name'?'input':'change',()=>renderAdminTeamTracker());
+    });
+  }
+
+  function renderAdminWeekView() {
+    const el = q('#view-attweek'); if (!el) return;
+    const ws     = getWeekStart(adminWeekOffset);
+    const wLabel = getWeekLabel(adminWeekOffset);
+    const today  = todayStr();
+    const days   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const members= getAllMembers();
+
+    const dates = Array.from({length:7},(_,i)=>{
+      const d=new Date(ws); d.setDate(ws.getDate()+i);
+      const dk=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+      return {dk,day:days[i],label:d.toLocaleDateString('en-US',{month:'short',day:'numeric'}),isToday:dk===today,isWeekend:i===0||i===6};
+    });
+
+    el.innerHTML =
+      '<div class="ph"><div class="ph-left"><div class="ph-title">Week View</div>' +
+      '<div class="ph-sub">'+wLabel+' — '+members.length+' members</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-sync-att">'+ic.sync+' Sync</button></div></div>' +
+      '<div class="wv-controls" style="margin-bottom:16px">' +
+      '<button class="wv-nav-btn" data-action="adm-wv-prev">'+ic.left+'</button>' +
+      '<div class="wv-range"><div class="wv-range-title">'+wLabel+'</div><div class="wv-range-sub">'+(adminWeekOffset===0?'Current Week':Math.abs(adminWeekOffset)+' week(s) '+(adminWeekOffset<0?'ago':'ahead'))+'</div></div>'+
+      (adminWeekOffset!==0?'<button class="wv-today-btn" data-action="adm-wv-today">This Week</button>':'')+
+      '<button class="wv-nav-btn" data-action="adm-wv-next">'+ic.right+'</button></div>'+
+      '<div class="wv-grid-wrap"><div class="wv-header">' +
+      '<div class="wv-hcell" style="text-align:left;padding-left:14px">Member</div>' +
+      dates.map(d=>'<div class="wv-hcell'+(d.isToday?' today-col':'')+'" style="'+(d.isWeekend?'opacity:.4':'')+'">'+d.day+'<div class="wv-hdate">'+d.label+'</div></div>').join('') +
+      '</div>' +
+      (members.length ? members.map(m=>{
+        const ini=m.split(/[\s,]+/).filter(Boolean).map(x=>x[0].toUpperCase()).join('').slice(0,2);
+        return '<div class="wv-row">'+
+          '<div class="wv-name-cell"><div class="wv-av" style="background:var(--bg4);color:var(--text2)">'+ini+'</div><div class="wv-name">'+m+'</div></div>'+
+          dates.map(d=>{
+            const st=getTeamStatus(m,d.dk), sh=getTeamShift(m,d.dk)||'';
+            const cfg=STATUS_CFG[st]||{};
+            return '<div class="wv-cell'+(d.isToday?' today-col':'')+(d.isWeekend?' weekend-col':'')+'" style="'+(st&&!d.isWeekend?'background:'+cfg.bg:'')+'">' +
+              (d.isWeekend?'<span style="font-size:.7rem;color:var(--text3)">—</span>':
+                st?'<span class="sp sp-'+st.toLowerCase().replace(' ','-')+'" style="font-size:.7rem">'+st+'</span>'+
+                   (sh?'<span style="font-size:.65rem;color:var(--text3)">'+sh+'</span>':''):
+                '<span style="font-size:.7rem;color:var(--text3)">—</span>') +
+              '</div>';
+          }).join('')+
+          '</div>';
+      }).join('') : '<div style="padding:24px;text-align:center;color:var(--text3)">No members. Sync first.</div>') +
+      '</div>';
+  }
+
+  function renderAdminNPTLog() {
+    const el = q('#view-attnpt'); if (!el) return;
+    const nf  = (q('#adm-npt-name')?.value||'').toLowerCase();
+    const all = Array.isArray(nptAllCache) ? nptAllCache : [];
+    const rows= nf ? all.filter(n=>(n.name||n.employeeName||'').toLowerCase().includes(nf)) : all;
+    const total=rows.reduce((a,n)=>a+parseInt(n.minutes||n.DurationMins||0),0);
+    el.innerHTML=
+      '<div class="ph"><div class="ph-left"><div class="ph-title">NPT Log</div>' +
+      '<div class="ph-sub">All team non-productive time entries</div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-sync-npt">'+ic.sync+' Sync</button></div></div>'+
+      '<div class="stats-grid sg3" style="margin-bottom:12px">' +
+      '<div class="stat-card ab"><div class="lbl">Entries</div><div class="val">'+rows.length+'</div></div>' +
+      '<div class="stat-card amb"><div class="lbl">Total Minutes</div><div class="val">'+total+'m</div></div>' +
+      '<div class="stat-card pb"><div class="lbl">People</div><div class="val">'+[...new Set(rows.map(n=>n.name||n.employeeName).filter(Boolean))].length+'</div></div></div>'+
+      '<div style="display:flex;gap:8px;margin-bottom:12px">' +
+      '<input id="adm-npt-name" class="dtr-input" placeholder="Filter by name..." style="max-width:200px" value="'+(nf||'')+'"></div>'+
+      '<div class="tbl-wrap"><table class="dtr-table"><thead><tr>' +
+      '<th>#</th><th>Name</th><th>Date</th><th>Type</th><th>Minutes</th><th>Description</th><th>Logged</th>' +
+      '</tr></thead><tbody>'+
+      (rows.length?rows.slice().reverse().map((n,i)=>{
+        const name=n.name||n.employeeName||'', date=n.date||(n.NPTDate||'').split('T')[0], type=n.type||n.NPTType||'', mins=n.minutes||n.DurationMins||0, desc=n.desc||n.Description||'', logged=n.loggedAt||n.LoggedAt||n.Created||'';
+        return '<tr><td style="color:var(--text3)">'+(i+1)+'</td><td class="bold">'+name+'</td><td>'+date+'</td>' +
+          '<td><span style="padding:2px 7px;border-radius:4px;background:rgba(88,166,255,.1);color:var(--accent);font-size:.75rem;font-weight:700">'+type+'</span></td>' +
+          '<td class="mono">'+mins+'m</td>' +
+          '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+desc.replace(/"/g,"&quot;")+'">'+desc+'</td>' +
+          '<td style="font-size:.8rem;color:var(--text3)">'+formatSPTime(logged)+'</td></tr>';
+      }).join(''):'<tr><td colspan="7"><div class="empty"><p>No NPT entries. Sync from SP.</p></div></td></tr>')+
+      '</tbody></table></div>';
+    const inp=el.querySelector('#adm-npt-name');
+    if(inp) inp.addEventListener('input',()=>renderAdminNPTLog());
+  }
+
+  // Admin fetch functions
+  function fetchAdminTasks() {
+    toast('Syncing tasks...','info');
+    GM_xmlhttpRequest({
+      method:'GET',
+      url:SP.SITE+"/_api/web/lists/GetByTitle('"+SP.TASK_LIST+"')/items?$top=5000&$orderby=TaskDate desc",
+      headers:{'Accept':'application/json;odata=verbose'}, withCredentials:true,
+      onload:res=>{
+        try {
+          const items=JSON.parse(res.responseText).d.results||[];
+          submissions=items.map(it=>({
+            employeeName:it.EmployeeName||'', taskType:it.TaskType||'',
+            hours:parseFloat(it.HoursWorked)||0, npt:parseFloat(it.NPTHours)||0,
+            workType:it.WorkType||'Productive', adhoc:it.AdHocDetails||'',
+            shift:it.Shift||'', date:(it.TaskDate||it.Created||'').split('T')[0],
+            submittedAt:it.SubmittedAt||it.Created||''
+          }));
+          toast('✅ '+items.length+' tasks synced','ok');
+          if(currentView==='overview') renderAdminOverview();
+          if(currentView==='teamtrack') renderAdminTeamTracker();
+        } catch(e){ toast('❌ Task sync error: '+e.message,'err'); }
+      },
+      onerror:()=>toast('❌ Cannot reach SP','err')
+    });
+  }
+
+  function fetchAdminAttendance() {
+    toast('Syncing attendance...','info');
+    GM_xmlhttpRequest({
+      method:'GET',
+      url:SP.SITE+"/_api/web/lists/GetByTitle('"+SP.STATUS_LIST+"')/items?$top=5000&$orderby=StatusDate desc&$select=EmployeeName,StatusDate,WorkStatus,Process,TaskNotes",
+      headers:{'Accept':'application/json;odata=verbose'}, withCredentials:true,
+      onload:res=>{
+        try {
+          teamStatusCache_adm={};
+          (JSON.parse(res.responseText).d.results||[]).forEach(it=>{
+            const name=it.EmployeeName||'', dk=(it.StatusDate||'').split('T')[0];
+            if(name&&dk) teamStatusCache_adm[name+'::'+dk]={status:it.WorkStatus||'',process:it.Process||'',task:it.TaskNotes||''};
+          });
+          safeSaveObj('dtr_teamcache',teamStatusCache_adm);
+          toast('✅ Attendance synced','ok');
+          if(currentView==='attweek') renderAdminWeekView();
+          if(currentView==='overview') renderAdminOverview();
+        } catch(e){ toast('❌ Att sync error: '+e.message,'err'); }
+      },
+      onerror:()=>toast('❌ Cannot reach SP','err')
+    });
+  }
+
+  function fetchAdminNPT() {
+    toast('Syncing NPT...','info');
+    GM_xmlhttpRequest({
+      method:'GET',
+      url:SP.SITE+"/_api/web/lists/GetByTitle('"+SP.NPT_LIST+"')/items?$top=5000&$orderby=Created desc",
+      headers:{'Accept':'application/json;odata=verbose'}, withCredentials:true,
+      onload:res=>{
+        try {
+          const adminNPTJson = JSON.parse(res.responseText);
+          if (!adminNPTJson.d) { toast('❌ NPT list error — check list name: ' + SP.NPT_LIST,'err'); return; }
+          nptAllCache=(adminNPTJson.d.results||[]).map(it=>({
+            name:     it.EmployeeName||'',
+            date:     (it.NPTDate||it.Created||'').split('T')[0],
+            type:     it.NPTType||'',
+            minutes:  parseInt(it.DurationMins)||0,
+            desc:     it.Description||'',
+            loggedAt: it.LoggedAt||it.Created||''
+          }));
+          toast('✅ NPT synced','ok');
+          if(currentView==='attnpt') renderAdminNPTLog();
+        } catch(e){ toast('❌ NPT sync error: '+e.message,'err'); }
+      },
+      onerror:()=>toast('❌ Cannot reach SP','err')
+    });
+  }
+
+  function fetchAllAdminData() { fetchAdminTasks(); fetchAdminAttendance(); fetchAdminNPT(); }
 
 
   // DATA HELPERS
@@ -1856,7 +2803,7 @@
   function mySubmissions() { return Array.isArray(submissions)?submissions.filter(s=>s&&s.employeeName===authState.name):[]; }
   function calcAvgProd(subs){ if(!Array.isArray(subs))return 0;const v=subs.filter(s=>s&&!s.taskType?.startsWith('Leave'));if(!v.length)return 0;return Math.min(100,v.reduce((a,s)=>a+((s.hours||0)/WH*100),0)/v.length); }
   function calcStreak(subs){ const days=[...new Set(subs.filter(s=>s&&!s.taskType?.startsWith('Leave')).map(s=>s.date))].sort().reverse();let streak=0,prev=new Date();for(const d of days){const dt=new Date(d+'T12:00:00'),diff=Math.round((prev-dt)/86400000);if(streak===0&&diff<=1){streak=1;prev=dt;}else if(diff===1){streak++;prev=dt;}else break;}return streak; }
-  function getLast7(){ return Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-6+i);return d.toISOString().split('T')[0];}); }
+  function getLast7(){ return Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-6+i);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}); }
   function getWeekStart(offset) {
     const d = new Date();
     // Use local midnight to avoid UTC day boundary issues
@@ -1866,10 +2813,52 @@
     return d;
   }
   function getWeekLabel(offset){ const ws=getWeekStart(offset),we=new Date(ws);we.setDate(ws.getDate()+6);const f=d=>d.toLocaleDateString('en-US',{month:'short',day:'numeric'});return f(ws)+' – '+f(we)+', '+we.getFullYear(); }
+  // ── All date/time helpers use LOCAL timezone ───────────────────────────
   function todayStr() {
     const d = new Date();
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
   }
+  // Local ISO timestamp (e.g. 2026-05-05T14:30:00+05:30) — for SP datetime fields
+  // ── Date/Time helpers — all IST-aware ─────────────────────────────────
+  //
+  // Rule: SP stores UTC internally, displays per regional settings.
+  // For date-only SP fields (NPTDate, TaskDate, StatusDate):
+  //   → Send local date at local NOON converted to UTC
+  //   → Noon in IST (UTC+5:30) = 06:30 UTC — safe from day-boundary shift
+  // For timestamp SP fields (LoggedAt, SubmittedAt, UpdatedAt):
+  //   → Send real UTC (new Date().toISOString()) — SP displays in site TZ
+  // For UI display of timestamps from SP:
+  //   → Convert to local using formatSPTime()
+
+  // Convert a YYYY-MM-DD local date to UTC ISO for SP date fields
+  // Uses local noon to avoid day-boundary issues with IST (+5:30)
+  function localDateSP(dateStr) {
+    const d = new Date((dateStr || todayStr()) + 'T12:00:00'); // local noon
+    return d.toISOString(); // converts local noon → UTC (e.g. 06:30Z for IST)
+  }
+
+  // Current time as UTC ISO — correct for SP timestamp fields
+  function nowUTC() {
+    return new Date().toISOString();
+  }
+
+  // Format a SP datetime string for LOCAL display (IST)
+  // SP returns UTC strings like "2026-05-05T05:53:00Z"
+  // This converts them to local time for display
+  function formatSPTime(spDateStr) {
+    if (!spDateStr) return '—';
+    try {
+      const d = new Date(spDateStr);
+      if (isNaN(d)) return spDateStr.replace('T',' ').slice(0,16);
+      return d.toLocaleDateString('en-IN', {
+        year:'numeric', month:'2-digit', day:'2-digit',
+        hour:'2-digit', minute:'2-digit', hour12:false
+      }).replace(/\//g,'-');
+    } catch { return spDateStr.slice(0,16); }
+  }
+
+  // Keep localISOString as alias for backward compat (now uses UTC)
+  function localISOString() { return new Date().toISOString(); }
   function yesterdayStr() {
     const d = new Date(); d.setDate(d.getDate()-1);
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');

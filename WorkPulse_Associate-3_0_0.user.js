@@ -52,13 +52,13 @@
     'Anshdeep','Gsridev','Arvindon','Psiranga','Varmana',
     'Haranbhe','Kalakuh','Alekhyya','Pankae','Madhureg',
     'Bsv','Heswitha','Mbahyal','Bhanupru','Harusn',
-    'Remoch','Siqmadhu','Sheebyme','Rajawbab','Inagajag',
+    'Remoch','Siqmadhu','Rajawbab','Inagajag',
     'Malsrira','Edharapa','Hshyaraj','Sofiykja','Rayyanms',
-    'Awaispsh','Kenumula','Dvsanjay','Tumkurs',
+    'Kenumula','Tumkurs',
     'Mppunna','Joldapka'
   ]; // 42 associates
 
-  const ADMINS      = ['Tkattula','Chaturay','Shamils','Nkandhur','Sherylv']; // 5 admins
+  const ADMINS      = ['Tkattula','Chaturay','Shamils','Nkandhur','Sherylv','Sheebyme','Awaispsh','Dvsanjay']; // 8 admins
   const SUPER_ADMIN = 'Tkattula'; // can access both admin + associate (Admin-tarun) views
 
   // Runtime role — set after SSO/login
@@ -863,7 +863,16 @@
     // For associates: load only own submissions
     if (role === 'associate') {
       const userKey = 'dtr_subs_' + name.toLowerCase().replace(/\s+/g,'_');
-      submissions = safeLoad(userKey, []).filter(s => s && s.employeeName === name);
+      // Normalise key — try both formats so old entries still load
+      const normName = name.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_');
+      const userKeyOld = 'dtr_subs_' + name.toLowerCase().replace(/[^a-z0-9]+/g,'_');
+      const userKeyNew = 'dtr_subs_' + normName;
+      const loaded1 = safeLoad(userKeyNew, []);
+      const loaded2 = userKeyNew !== userKeyOld ? safeLoad(userKeyOld, []) : [];
+      const merged  = [...loaded1];
+      loaded2.forEach(s => { if (!merged.find(m => m.submittedAt===s.submittedAt && m.taskType===s.taskType)) merged.push(s); });
+      submissions = merged.filter(s => s && s.employeeName &&
+        s.employeeName.toLowerCase().trim() === name.toLowerCase().trim());
     } else {
       submissions = [];
     }
@@ -1118,7 +1127,8 @@
 
   function handleClick(e) {
     const btn = e.target.closest('[data-action]'); if (!btn) return;
-    const a = btn.dataset.action, v = btn.dataset.val || '';
+    const a = btn.dataset.action;
+    const v = btn.dataset.val !== undefined ? btn.dataset.val : (btn.dataset.idx !== undefined ? btn.dataset.idx : '');
     switch (a) {
       case 'do-login':      doLogin(); break;
       case 'do-logout':     doLogout(); break;
@@ -1259,6 +1269,21 @@
         renderAdminTeamTracker(); break;
       }
       case 'adm-assoc-remove': { admSelectedAssocs.delete(v); renderAdminTeamTracker(); break; }
+      case 'adm-edit-entry': {
+        const idx2 = parseInt(v);
+        if (!isNaN(idx2) && idx2>=0 && idx2<submissions.length) {
+          showAdminEditEntry(idx2);
+        }
+        break;
+      }
+      case 'adm-del-entry': {
+        const idx3 = parseInt(v);
+        if (!isNaN(idx3) && idx3>=0 && idx3<submissions.length) {
+          showAdminDeleteEntry(idx3);
+        }
+        break;
+      }
+      case 'adm-add-leave': { showAdminAddLeave(); break; }
       case 'aan-select':  { aanSelectedAssoc=v; aanMode='single'; renderAdminAnalytics(); break; }
       case 'aan-compare': { if(aanCompareSet.has(v))aanCompareSet.delete(v);else if(aanCompareSet.size<4)aanCompareSet.add(v); renderAdminAnalytics(); break; }
       case 'aan-mode':    { if(['single','compare','weekly','monthly'].includes(v)) aanMode=v; renderAdminAnalytics(); break; }
@@ -1522,16 +1547,21 @@
     cards.forEach(card => {
       const isLeave = card.classList.contains('leave');
       if (isLeave) {
-        const lhText = card.querySelector('.leave-hours-display')?.textContent || '';
-        const lh = lhText.includes('4') ? 4 : 8;
+        // Detect leave type from button state
+        const activeBtn = card.querySelector('.leave-type-btn.active');
+        const leaveType = activeBtn ? activeBtn.dataset.val : 'full';
+        const leaveMins = leaveType === 'full' ? 480 : 240;  // full=480, half=240
+        const leaveHrs  = parseFloat((leaveMins/60).toFixed(2));
         tasks.push({
           employeeName: authState.name,
           taskType:     'Leave',
           hours:        0,
-          npt:          parseFloat((lh).toFixed(2)),
+          npt:          leaveHrs,           // hrs for SP (8.0 or 4.0)
+          nptMinutes:   leaveMins,          // mins for display (480 or 240)
           minutes:      0,
           workType:     'NPT',
-          adhoc:        '',
+          leaveType,                        // 'full' | 'half-am' | 'half-pm'
+          adhoc:        card.querySelector('.dtr-adhoc')?.value || '',
           shift,
           date:         dateVal,
           submittedAt:  nowUTC()
@@ -1588,6 +1618,48 @@
       return;
     }
 
+    // ── Duplicate check: warn if same taskType+date already in queue/submissions ──
+    const dupWarnings = [];
+    tasks.forEach(t => {
+      const sameDate  = submissions.filter(s => s.date === t.date && s.employeeName === t.employeeName);
+      const inQueue   = spQueue.filter(s => s.date === t.date && s.employeeName === t.employeeName);
+      const allExist  = [...sameDate, ...inQueue];
+      // Check same taskType with DIFFERENT hours (allow) vs same taskType+same hours (warn)
+      const exact = allExist.find(s =>
+        s.taskType === t.taskType &&
+        Math.abs((s.minutes||Math.round((s.hours||0)*60)) - (t.minutes||Math.round((t.hours||0)*60))) < 5 &&
+        Math.abs((s.nptMinutes||Math.round((s.npt||0)*60)) - (t.nptMinutes||Math.round((t.npt||0)*60))) < 5
+      );
+      if (exact) dupWarnings.push(t.taskType + ' on ' + t.date + ' (already submitted with same hours)');
+    });
+    if (dupWarnings.length > 0) {
+      const proceed = await new Promise(resolve => {
+        const isLt = root && root.classList.contains('lt');
+        const dv = document.createElement('div');
+        dv.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483646;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px)';
+        const bg = isLt?'#fff':'#12151f', brd = isLt?'rgba(0,0,0,.08)':'rgba(255,255,255,.1)';
+        const tc = isLt?'#1c1c1e':'#f0f4ff', t2 = isLt?'rgba(28,28,30,.5)':'rgba(240,244,255,.5)';
+        dv.innerHTML = '<div style="background:'+bg+';border:1px solid '+brd+';border-radius:18px;width:min(380px,92vw);overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.8);font-family:-apple-system,sans-serif">'
+          +'<div style="height:3px;background:linear-gradient(90deg,#f59e0b,#ef4444)"></div>'
+          +'<div style="padding:24px">'
+          +'<div style="font-size:1rem;font-weight:800;color:'+tc+';margin-bottom:6px;">⚠️ Duplicate Entry Detected</div>'
+          +'<div style="font-size:.82rem;color:'+t2+';margin-bottom:14px;">The following entries are already in your submission history with the same hours:</div>'
+          +'<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:12px;margin-bottom:16px;font-size:.82rem;color:#f59e0b;">'
+          + dupWarnings.map(w=>'• '+w).join('<br>') +
+          '</div>'
+          +'<div style="font-size:.8rem;color:'+t2+';margin-bottom:16px;">If the hours are different, you can still submit. Cancel to go back and check.</div>'
+          +'<div style="display:flex;gap:10px">'
+          +'<button id="dup-cancel" style="flex:1;padding:11px;border-radius:10px;border:1px solid '+brd+';background:rgba(239,68,68,.1);color:#ef4444;font-weight:700;cursor:pointer;font-family:inherit">Cancel</button>'
+          +'<button id="dup-proceed" style="flex:1;padding:11px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-family:inherit">Submit Anyway</button>'
+          +'</div></div></div>';
+        const rr = document.getElementById('dtr-root-outer') || document.body;
+        rr.appendChild(dv);
+        dv.querySelector('#dup-cancel').onclick  = () => { dv.remove(); resolve(false); };
+        dv.querySelector('#dup-proceed').onclick = () => { dv.remove(); resolve(true); };
+      });
+      if (!proceed) return;
+    }
+
     // ── Show confirmation popup before submitting ───────────────────────
     const confirmed = await showSubmitConfirm(tasks, dateVal, shift);
     if (!confirmed) return; // user cancelled
@@ -1598,7 +1670,7 @@
 
     // ── Save locally first ───────────────────────────────────────────────
     tasks.forEach(t => submissions.push(t));
-    const userKey = 'dtr_subs_' + authState.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const userKey = 'dtr_subs_' + authState.name.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_');
     safeSave(userKey, submissions);
     updateSBStats();
 
@@ -3788,7 +3860,7 @@
       '<div class="ph-sub">' + rows.length + ' entries · ' +
       (admSelectedAssocs.size > 0 ? admSelectedAssocs.size + ' associate(s) selected' : 'all ' + getAllMembers().length + ' members') +
       '</div></div>' +
-      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-sync-tasks">' + ic.sync + ' Sync</button></div></div>' +
+      '<div class="ph-actions"><button class="btn btn-ghost btn-sm" data-action="adm-add-leave" style="margin-right:6px">+ Add Leave</button><button class="btn btn-ghost btn-sm" data-action="adm-sync-tasks">' + ic.sync + ' Sync</button></div></div>' +
 
       '<div class="stats-grid sg4" style="margin-bottom:12px">' +
       '<div class="stat-card ab"><div class="lbl">Entries</div><div class="val">' + rows.length + '</div></div>' +
@@ -3813,19 +3885,31 @@
       '<select id="adm-tk-sort" class="dtr-select" style="max-width:130px"><option value="date"' + (sortF==='date'?' selected':'') + '>Latest</option><option value="name"' + (sortF==='name'?' selected':'') + '>By Name</option><option value="hours"' + (sortF==='hours'?' selected':'') + '>By Hours</option></select>' +
       '</div>' +
       '<div class="tbl-wrap"><table class="dtr-table"><thead><tr>' +
-      '<th>#</th><th>Date</th><th>Employee</th><th>Task Type</th><th>Work Type</th><th>Hours</th><th>NPT Hrs</th><th>Shift</th><th>Notes</th><th>Submitted</th>' +
+      '<th>#</th><th>Date</th><th>Employee</th><th>Task Type</th><th>Work Type</th><th>Hours</th><th>NPT Hrs</th><th>Shift</th><th>Notes</th><th>Submitted</th><th>Actions</th>' +
       '</tr></thead><tbody>' +
-      (rows.length ? rows.map((r,i)=>'<tr><td style="color:var(--text3)">'+(i+1)+'</td>'+
-        '<td>'+r.date+'</td><td class="bold">'+r.employeeName+'</td>' +
-        '<td style="font-weight:600">'+r.taskType+'</td>' +
-        '<td><span class="badge '+(r.workType==='NPT'?'ba':'bg2')+'">'+r.workType+'</span></td>' +
-        '<td class="mono">'+parseFloat(r.hours||0).toFixed(1)+'</td>' +
-        '<td class="mono"'+(parseFloat(r.npt||0)>0?' style="color:var(--amber)"':'')+'>'+parseFloat(r.npt||0).toFixed(1)+'</td>' +
-        '<td>'+(r.shift||'—')+'</td>' +
-        '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(r.adhoc||'').replace(/"/g,"&quot;")+'">'+(r.adhoc||'—')+'</td>' +
-        '<td style="font-size:.8rem;color:var(--text3)">'+formatSPTime(r.submittedAt)+'</td>' +
-        '</tr>').join('') :
-        '<tr><td colspan="10"><div class="empty"><p>No entries. Sync from SP or check filters.</p></div></td></tr>') +
+      (rows.length ? rows.map((r,i)=>{
+        // Store real submissions index directly — indexOf is reliable here since r is object reference
+        const realIdx = submissions.indexOf(r);
+        const useIdx  = realIdx >= 0 ? realIdx : i;
+        const editSVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+        const delSVG  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        return '<tr>'+
+          '<td style="color:var(--text3);font-size:.8rem">'+(i+1)+'</td>'+
+          '<td style="font-weight:600">'+r.date+'</td><td class="bold">'+r.employeeName+'</td>' +
+          '<td style="font-weight:600">'+r.taskType+'</td>' +
+          '<td><span class="badge '+(r.workType==='NPT'?'ba':'bg2')+'">'+r.workType+'</span></td>' +
+          '<td class="mono">'+parseFloat(r.hours||0).toFixed(1)+'</td>' +
+          '<td class="mono"'+(parseFloat(r.npt||0)>0?' style="color:var(--amber)"':'')+'>'+parseFloat(r.npt||0).toFixed(1)+'</td>' +
+          '<td>'+(r.shift||'—')+'</td>' +
+          '<td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(r.adhoc||'').replace(/"/g,'&quot;')+'">'+(r.adhoc||'—')+'</td>' +
+          '<td style="font-size:.78rem;color:var(--text3)">'+formatSPTime(r.submittedAt)+'</td>' +
+          '<td><div style="display:flex;gap:5px">'+
+            '<button data-action="adm-edit-entry" data-idx="'+useIdx+'" data-val="'+useIdx+'" title="Edit" style="width:28px;height:28px;border-radius:7px;border:1px solid var(--border);background:var(--bg3);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center">'+editSVG+'</button>'+
+            '<button data-action="adm-del-entry" data-idx="'+useIdx+'" data-val="'+useIdx+'" title="Delete" style="width:28px;height:28px;border-radius:7px;border:1.5px solid rgba(255,69,58,.4);background:rgba(255,69,58,.1);color:#ff453a;cursor:pointer;display:flex;align-items:center;justify-content:center">'+delSVG+'</button>'+
+          '</div></td>'+
+        '</tr>';
+      }).join('') :
+        '<tr><td colspan="11"><div class="empty"><p>No entries. Sync from SP or check filters.</p></div></td></tr>') +
       '</tbody></table></div>';
 
     // Wire remaining filter dropdowns (type/task/sort)
@@ -3834,6 +3918,229 @@
       if (inp) inp.addEventListener('change', () => renderAdminTeamTracker());
     });
   }
+
+  // ── SP helpers for admin edit/delete ──────────────────────────────────
+  async function spDeleteItem(listName, spId) {
+    if (!spId) return false;
+    const token = await getDigest();
+    if (!token) return false;
+    return new Promise(resolve => {
+      GM_xmlhttpRequest({
+        method:'POST', withCredentials:true,
+        url: SP.SITE+"/_api/web/lists/GetByTitle('"+listName+"')/items("+spId+")" ,
+        headers:{'Accept':'application/json;odata=verbose','Content-Type':'application/json;odata=verbose',
+          'X-RequestDigest':token,'X-HTTP-Method':'DELETE','If-Match':'*'},
+        onload:  r => resolve(r.status===200||r.status===204),
+        onerror: ()=> resolve(false)
+      });
+    });
+  }
+
+  async function spPatchItem(listName, spId, metaType, body) {
+    if (!spId) return false;
+    const token = await getDigest();
+    if (!token) return false;
+    const data = JSON.stringify({__metadata:{type:metaType||'SP.Data.TaskReportListItem'},...body});
+    return new Promise(resolve => {
+      GM_xmlhttpRequest({
+        method:'POST', withCredentials:true, data,
+        url: SP.SITE+"/_api/web/lists/GetByTitle('"+listName+"')/items("+spId+")" ,
+        headers:{'Accept':'application/json;odata=verbose','Content-Type':'application/json;odata=verbose',
+          'X-RequestDigest':token,'X-HTTP-Method':'MERGE','If-Match':'*'},
+        onload:  r => resolve(r.status===200||r.status===204),
+        onerror: ()=> resolve(false)
+      });
+    });
+  }
+
+  function showAdminEditEntry(idx) {
+    const r = submissions[idx]; if (!r) return;
+    const isLt=root&&root.classList.contains('lt');
+    const popBg=isLt?'#fff':'#12151f',rowBg=isLt?'#f5f5f7':'#1c2030';
+    const bord=isLt?'rgba(0,0,0,.08)':'rgba(255,255,255,.1)';
+    const textC=isLt?'#1c1c1e':'#f0f4ff',t2C=isLt?'rgba(28,28,30,.5)':'rgba(240,244,255,.5)';
+    const inp = (id,type,val,extra='')=>'<input id="ae-'+id+'" type="'+type+'" value="'+val+'" '+extra+' style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid '+bord+';background:'+rowBg+';color:'+textC+';font-family:inherit;font-size:.88rem;box-sizing:border-box">';
+    const sel = (id,opts,val)=>'<select id="ae-'+id+'" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid '+bord+';background:'+rowBg+';color:'+textC+';font-family:inherit;font-size:.88rem">'+opts.map(o=>'<option value="'+o+'"'+(o===val?' selected':'')+'>'+o+'</option>').join('')+'</select>';
+    const lbl = (l,el)=>'<div style="margin-bottom:10px"><label style="font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:'+t2C+';display:block;margin-bottom:4px">'+l+'</label>'+el+'</div>';
+    const ov=document.createElement('div');
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483646;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px)';
+    ov.innerHTML='<div style="background:'+popBg+';border:1px solid '+bord+';border-radius:18px;width:min(480px,94vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 70px rgba(0,0,0,.8);font-family:-apple-system,sans-serif">'
+      +'<div style="height:3px;background:linear-gradient(90deg,#4f9eff,#a371f7)"></div>'
+      +'<div style="padding:22px">'
+      +'<div style="font-size:.95rem;font-weight:800;color:'+textC+';margin-bottom:16px">Edit Entry'+(r.spId?' <span style="font-size:.7rem;padding:2px 6px;border-radius:4px;background:rgba(79,158,255,.15);color:#4f9eff">SP #'+r.spId+'</span>':'')+'</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+      +lbl('Employee','<input value="'+(r.employeeName||'')+'" readonly style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid '+bord+';background:'+rowBg+';color:'+t2C+';font-family:inherit;opacity:.7;box-sizing:border-box">')
+      +lbl('Date', inp('date','date',r.date||''))
+      +'</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+      +lbl('Task Type', sel('task', TASK_TYPES.concat(['Leave']), r.taskType||''))
+      +lbl('Work Type', sel('work', ['Productive','NPT'], r.workType||'Productive'))
+      +'</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">'
+      +lbl('Hours', inp('hrs','number',(r.hours||0),'step="0.1" min="0" max="8"'))
+      +lbl('NPT Hrs', inp('npt','number',(r.npt||0),'step="0.1" min="0" max="8"'))
+      +lbl('Shift', sel('shift',['8-5','9-6','10-7','11-8'],r.shift||'8-5'))
+      +'</div>'
+      +lbl('Notes', '<input id="ae-notes" value="'+(r.adhoc||'').replace(/"/g,'&quot;')+'" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid '+bord+';background:'+rowBg+';color:'+textC+';font-family:inherit;font-size:.88rem;box-sizing:border-box">')
+      +'<div style="display:flex;gap:10px;margin-top:6px">'
+      +'<button id="ae-cancel" style="flex:1;padding:11px;border-radius:10px;border:1px solid '+bord+';background:'+rowBg+';color:'+t2C+';font-weight:600;cursor:pointer;font-family:inherit">Cancel</button>'
+      +'<button id="ae-save" style="flex:2;padding:11px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-family:inherit">Save Changes</button>'
+      +'</div></div></div>';
+    const rr=document.getElementById('dtr-root-outer')||document.body;
+    rr.appendChild(ov);
+    ov.querySelector('#ae-cancel').onclick=()=>ov.remove();
+    ov.querySelector('#ae-save').onclick=async()=>{
+      const updated={...r,
+        date:ov.querySelector('#ae-date').value||r.date,
+        taskType:ov.querySelector('#ae-task').value||r.taskType,
+        workType:ov.querySelector('#ae-work').value||r.workType,
+        hours:parseFloat(ov.querySelector('#ae-hrs').value)||0,
+        npt:parseFloat(ov.querySelector('#ae-npt').value)||0,
+        shift:ov.querySelector('#ae-shift').value||r.shift,
+        adhoc:ov.querySelector('#ae-notes').value,
+      };
+      submissions[idx]=updated;
+      // Save locally
+      const uk='dtr_subs_'+(updated.employeeName||authState.name).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_');
+      const allSubs=safeLoad(uk,[]);
+      const si=allSubs.findIndex(s=>s.submittedAt===r.submittedAt&&s.taskType===r.taskType&&s.date===r.date);
+      if(si>=0)allSubs[si]=updated; else allSubs.push(updated);
+      safeSave(uk,allSubs);
+      ov.remove();
+      renderAdminTeamTracker();
+      // Sync to SP if has spId
+      if(updated.spId){
+        toast('Updating SharePoint...','info');
+        const listType=(typeof getListType==='function')?await getListType(SP.TASK_LIST):'SP.Data.TaskReportListItem';
+        const ok=await spPatchItem(SP.TASK_LIST,updated.spId,listType,{
+          TaskType:updated.taskType||'',HoursWorked:updated.hours||0,NPTHours:updated.npt||0,
+          WorkType:updated.workType||'Productive',AdHocDetails:updated.adhoc||'',
+          Shift:updated.shift||'',TaskDate:localDateSP(updated.date||todayStr())
+        });
+        toast(ok?'✅ Entry updated in SharePoint':'⚠️ Updated locally — SP sync failed',ok?'ok':'info');
+      } else {
+        toast('✅ Entry updated locally','ok');
+      }
+    };
+  }
+
+  function showAdminDeleteEntry(idx) {
+    const r = submissions[idx]; if (!r) return;
+    const isLt=root&&root.classList.contains('lt');
+    const popBg=isLt?'#fff':'#12151f',bord=isLt?'rgba(0,0,0,.08)':'rgba(255,255,255,.1)';
+    const textC=isLt?'#1c1c1e':'#f0f4ff',t2C=isLt?'rgba(28,28,30,.5)':'rgba(240,244,255,.5)';
+    const ov=document.createElement('div');
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483646;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px)';
+    ov.innerHTML='<div style="background:'+popBg+';border:1px solid '+bord+';border-radius:18px;width:min(380px,92vw);overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.8);font-family:-apple-system,sans-serif">'
+      +'<div style="height:3px;background:#ef4444"></div>'
+      +'<div style="padding:24px">'
+      +'<div style="font-size:.95rem;font-weight:800;color:'+textC+';margin-bottom:8px">Delete Entry?</div>'
+      +'<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:12px;margin-bottom:16px;font-size:.85rem;color:'+textC+'">'
+      +'<b>'+r.employeeName+'</b> — '+r.taskType+' on '+r.date
+      +(r.spId?'<div style="font-size:.72rem;color:#ef4444;margin-top:4px">SP #'+r.spId+' — will be deleted from SharePoint</div>':'')
+      +'</div>'
+      +'<div style="display:flex;gap:10px">'
+      +'<button id="ad-cancel" style="flex:1;padding:11px;border-radius:10px;border:1px solid '+bord+';background:transparent;color:'+t2C+';font-weight:600;cursor:pointer;font-family:inherit">Cancel</button>'
+      +'<button id="ad-confirm" style="flex:1;padding:11px;border-radius:10px;border:none;background:#ef4444;color:#fff;font-weight:700;cursor:pointer;font-family:inherit">Delete</button>'
+      +'</div></div></div>';
+    const rr=document.getElementById('dtr-root-outer')||document.body;
+    rr.appendChild(ov);
+    ov.querySelector('#ad-cancel').onclick=()=>ov.remove();
+    ov.querySelector('#ad-confirm').onclick=async()=>{
+      const spId=r.spId;
+      // Remove from local submissions
+      submissions.splice(idx,1);
+      // Remove from local storage too
+      const uk='dtr_subs_'+(r.employeeName||authState.name).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_');
+      const allSubs=safeLoad(uk,[]).filter(s=>!(s.submittedAt===r.submittedAt&&s.taskType===r.taskType&&s.date===r.date));
+      safeSave(uk,allSubs);
+      ov.remove();
+      renderAdminTeamTracker();
+      if(spId){
+        toast('Deleting from SharePoint...','info');
+        const ok=await spDeleteItem(SP.TASK_LIST,spId);
+        toast(ok?'✅ Deleted from SharePoint':'⚠️ Deleted locally — SP sync failed',ok?'ok':'info');
+      } else {
+        toast('✅ Entry removed','ok');
+      }
+    };
+  }
+
+  function showAdminAddLeave() {
+    const isLt=root&&root.classList.contains('lt');
+    const popBg=isLt?'#fff':'#12151f',rowBg=isLt?'#f5f5f7':'#1c2030';
+    const bord=isLt?'rgba(0,0,0,.08)':'rgba(255,255,255,.1)';
+    const textC=isLt?'#1c1c1e':'#f0f4ff',t2C=isLt?'rgba(28,28,30,.5)':'rgba(240,244,255,.5)';
+    const allM=getAllMembers();
+    const ov=document.createElement('div');
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483646;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px)';
+    ov.innerHTML='<div style="background:'+popBg+';border:1px solid '+bord+';border-radius:18px;width:min(420px,94vw);overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.8);font-family:-apple-system,sans-serif">'
+      +'<div style="height:3px;background:linear-gradient(90deg,#a371f7,#4f9eff)"></div>'
+      +'<div style="padding:22px">'
+      +'<div style="font-size:.95rem;font-weight:800;color:'+textC+';margin-bottom:16px">Add Leave for Associate</div>'
+      +'<div style="margin-bottom:10px"><label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:'+t2C+';display:block;margin-bottom:4px">Associate</label>'
+      +'<select id="al-name" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid '+bord+';background:'+rowBg+';color:'+textC+';font-family:inherit">'+allM.map(m=>'<option value="'+m+'">'+m+'</option>').join('')+'</select></div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'
+      +'<div><label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:'+t2C+';display:block;margin-bottom:4px">Date</label><input id="al-date" type="date" value="'+todayStr()+'" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid '+bord+';background:'+rowBg+';color:'+textC+';font-family:inherit;box-sizing:border-box"></div>'
+      +'<div><label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:'+t2C+';display:block;margin-bottom:4px">Leave Type</label>'
+      +'<select id="al-type" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid '+bord+';background:'+rowBg+';color:'+textC+';font-family:inherit"><option value="SL">SL – Sick Leave</option><option value="CL">CL – Casual Leave</option><option value="AL">AL – Annual Leave</option></select></div>'
+      +'</div>'
+      +'<div style="margin-bottom:14px"><label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:'+t2C+';display:block;margin-bottom:4px">Duration</label>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button class="al-dur-btn active" data-dur="full" style="flex:1;padding:9px;border-radius:8px;border:1.5px solid var(--accent);background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-family:inherit;font-size:.85rem">Full Day (480 min)</button>'
+      +'<button class="al-dur-btn" data-dur="half" style="flex:1;padding:9px;border-radius:8px;border:1.5px solid var(--border);background:transparent;color:'+textC+';font-weight:600;cursor:pointer;font-family:inherit;font-size:.85rem">Half Day (240 min)</button>'
+      +'</div></div>'
+      +'<div style="display:flex;gap:10px">'
+      +'<button id="al-cancel" style="flex:1;padding:11px;border-radius:10px;border:1px solid '+bord+';background:'+rowBg+';color:'+t2C+';font-weight:600;cursor:pointer;font-family:inherit">Cancel</button>'
+      +'<button id="al-save" style="flex:2;padding:11px;border-radius:10px;border:none;background:linear-gradient(135deg,#a371f7,#4f9eff);color:#fff;font-weight:700;cursor:pointer;font-family:inherit">Add Leave to SharePoint</button>'
+      +'</div></div></div>';
+    const rr=document.getElementById('dtr-root-outer')||document.body;
+    rr.appendChild(ov);
+    // Duration toggle
+    let selDur='full';
+    ov.querySelectorAll('.al-dur-btn').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        selDur=btn.dataset.dur;
+        ov.querySelectorAll('.al-dur-btn').forEach(b=>{
+          b.style.borderColor=b===btn?'var(--accent)':'var(--border)';
+          b.style.background=b===btn?'var(--accent)':'transparent';
+          b.style.color=b===btn?'#fff':textC;
+          b.style.fontWeight=b===btn?'700':'600';
+        });
+      });
+    });
+    ov.querySelector('#al-cancel').onclick=()=>ov.remove();
+    ov.querySelector('#al-save').onclick=async()=>{
+      const name=ov.querySelector('#al-name').value;
+      const date=ov.querySelector('#al-date').value;
+      const leaveKind=ov.querySelector('#al-type').value;
+      const leaveMins=selDur==='full'?480:240;
+      const leaveHrs=parseFloat((leaveMins/60).toFixed(2));
+      if(!name||!date){toast('Please fill all fields','info');return;}
+      const task={employeeName:name,taskType:'Leave',hours:0,npt:leaveHrs,
+        nptMinutes:leaveMins,minutes:0,workType:'NPT',leaveType:selDur,
+        adhoc:leaveKind+' – Admin set',shift:'8-5',date,submittedAt:nowUTC()};
+      // Save to associate's local storage
+      const uk='dtr_subs_'+name.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_');
+      const assocSubs=safeLoad(uk,[]);
+      assocSubs.push(task);
+      safeSave(uk,assocSubs);
+      // Update attendance status cache
+      teamStatusCache_adm[name+'::'+date]={status:leaveKind,shift:'8-5'};
+      teamStatusCache[name+'::'+date]={status:leaveKind,shift:'8-5'};
+      safeSaveObj('dtr_teamcache',teamStatusCache_adm);
+      ov.remove();
+      toast('Saving leave for '+name+'...','info');
+      // Post task to SP TaskReport list
+      const ok1=await postTask(task);
+      // Post attendance to SP AttendanceLog
+      const ok2=await postAttendance({name,status:leaveKind,shift:'8-5',date,updatedAt:nowUTC()});
+      toast((ok1||ok2)?'✅ Leave added for '+name+' on '+date+' in SharePoint':'⚠️ Leave saved locally — SP sync queued',(ok1||ok2)?'ok':'info');
+      renderAdminWeekView();
+      if(currentView==='overview')renderAdminOverview();
+    };
+  }
+
 
   function showAdminAttPicker(val) {
     const [name, dk] = val.split('|');
